@@ -26,7 +26,13 @@
 - Homebrew и `python@3.12` (`brew install python@3.12`).
 - Для вывода в Discord или OBS: [BlackHole](https://github.com/ExistentialAudio/BlackHole) (`brew install blackhole-2ch`).
 
-## Установка
+## Готовая сборка
+
+В [Releases](https://github.com/daniil7890/rvcmac/releases) лежит собранный `RVCMac.app`. Его собирает GitHub Actions на каждый тег `v*`. Сборка подписана ad-hoc, поэтому после скачивания нужно снять карантин: `xattr -dr com.apple.quarantine RVCMac.app`.
+
+Для импорта моделей всё равно нужен конвертер: клонируй репозиторий в `~/projects/rvcmac` и выполни шаг 1 ниже. Готовая сборка ищет конвертер и модели именно там.
+
+## Установка из исходников
 
 ```bash
 git clone https://github.com/daniil7890/rvcmac.git ~/projects/rvcmac
@@ -35,7 +41,7 @@ cd ~/projects/rvcmac
 # 1. окружение конвертера (~2 ГБ) + первая модель
 bash scripts/setup_converter.sh ~/Downloads/voice/model.pth
 
-# 2. приложение
+# 2. приложение (или скачай готовое из Releases)
 bash scripts/build_app.sh
 open RVCMac.app
 ```

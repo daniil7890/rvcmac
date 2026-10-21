@@ -1,0 +1,24 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build RVCMac.app
+        run: bash scripts/build_app.sh --release "${GITHUB_REF_NAME#v}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          body_path: .github/release-notes.md
+          generate_release_notes: true

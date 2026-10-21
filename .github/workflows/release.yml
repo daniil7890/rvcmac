@@ -1,11 +1,9 @@
 name: Release
 
-# Runs when a release is published (or a v* tag is pushed) and attaches the built app.
+# Runs when a release is published and attaches the built app to it.
 on:
   release:
     types: [published]
-  push:
-    tags: ["v*"]
 
 permissions:
   contents: write

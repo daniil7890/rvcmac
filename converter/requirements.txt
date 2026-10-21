@@ -1,0 +1,13 @@
+torch==2.7.1
+torchaudio==2.7.1
+coremltools==9.0
+transformers>=4.45,<4.57
+huggingface_hub
+safetensors
+numpy<2.3
+scipy
+librosa
+torchfcpe==0.0.4
+einops
+local-attention
+faiss-cpu

@@ -1,0 +1,22 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+cache/
+
+# Converted models and user data
+models/
+*.mlpackage/
+*.mlmodelc/
+*.index
+*.pth
+*.safetensors
+*.f32
+
+# Swift / build output
+app/.build/
+RVCMac.app/
+
+# Logs
+*.log
+.DS_Store

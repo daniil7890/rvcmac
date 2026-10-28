@@ -1,8 +1,8 @@
 # RVCMac
 
-Нативный голосовой чейнджер RVC для macOS на Apple Silicon. Модели работают через Core ML на Neural Engine и GPU, без PyTorch и браузера во время работы.
+**Русский** | [English](README.en.md)
 
-*Native real-time RVC voice changer for Apple Silicon Macs. Core ML on the Neural Engine and GPU, CoreAudio I/O, SwiftUI.*
+Нативный голосовой чейнджер RVC для macOS на Apple Silicon. Модели работают через Core ML на Neural Engine и GPU, без PyTorch и браузера во время работы.
 
 ## Как это устроено
 

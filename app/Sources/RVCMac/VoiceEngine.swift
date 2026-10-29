@@ -81,18 +81,49 @@ final class VoiceEngine {
 
     private var isRunning: Bool { running.withLock { $0 } }
 
+    private var prepared: VoicePipeline?
+
+    /// Builds the pipeline and runs a few inferences on silence before audio starts (call off the main thread).
+    /// Without this the first, slow (cold Neural Engine) blocks let input pile up; the backlog then sits in the
+    /// output queue as permanent extra latency. Returns the warm-up time in ms.
+    @discardableResult
+    func prepare(outputRate: Double, blocks: Int = 3) throws -> Double {
+        let t0 = HostTime.now()
+        let pipeline = try VoicePipeline(model: currentModel, outRate: outputRate)
+        var p = params
+        p.gateDB = -200
+        p.bypass = false
+        var times = StageTimes()
+        let silence = [Float](repeating: 0, count: pipeline.block16)
+        for _ in 0..<blocks {
+            _ = try silence.withUnsafeBufferPointer { try pipeline.process($0, params: p, times: &times) }
+        }
+        pipeline.reset()
+        prepared = pipeline
+        return HostTime.ms(from: t0, to: HostTime.now())
+    }
+
     func start(input: AudioDeviceID, output: AudioDeviceID) throws {
         stop()
         try io.start(input: input, output: output)
         let pipeline: VoicePipeline
         do {
-            pipeline = try VoicePipeline(model: currentModel, outRate: io.outputRate)
+            if let p = prepared, p.outRate == io.outputRate, p.state.model === currentModel {
+                pipeline = p
+            } else {
+                pipeline = try VoicePipeline(model: currentModel, outRate: io.outputRate)
+            }
+            prepared = nil
         } catch {
             io.stop()
             throw error
         }
         io.outputPrefill.value = pipeline.blockOut / 2
-        io.outputMaxFill.value = pipeline.blockOut * 3
+        // Right after a block is written the queue holds that block plus the leftover of the previous ones.
+        // Capping it at 1.5 blocks keeps up to half a block of leftover as margin for processing jitter,
+        // while a standing backlog (start-up, a slow block) is dropped once instead of adding latency for
+        // the rest of the session (was 3 blocks). Trims are counted in the diagnostics.
+        io.outputMaxFill.value = pipeline.blockOut + pipeline.blockOut / 2
         recorderLock.withLockUnchecked { recorder.reset() }
         for c in [outputOverflow, skipped16, modelSwitches] { c.value = 0 }
         sessionStarted = Date()

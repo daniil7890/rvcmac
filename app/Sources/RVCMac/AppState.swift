@@ -276,6 +276,8 @@ final class AppState: ObservableObject {
                 let loaded = try LoadedVoice(voice: voice, config: cfg, units: units)
                 let engine = VoiceEngine(model: loaded)
                 let loadTime = Date().timeIntervalSince(t0)
+                await MainActor.run { self.status = "Прогрев моделей…" }
+                let warmMs = try engine.prepare(outputRate: AudioDevices.sampleRate(output.id))
                 await MainActor.run {
                     engine.onStats = { s in Task { @MainActor in self.receive(s) } }
                     engine.onError = { msg in Task { @MainActor in self.fail(msg) } }
@@ -296,8 +298,8 @@ final class AppState: ObservableObject {
                         self.chart.removeAll()
                         self.chartStart = Date()
                         self.status = "Работает: \(voice.name) · \(input.name) → \(output.name)"
-                        self.appendLog(String(format: "Модели загружены за %.1f с (%@). Устройства: вход %.1f мс, выход %.1f мс по данным Core Audio.",
-                                              loadTime, computeName, engine.io.inputLatencyMs, engine.io.outputLatencyMs))
+                        self.appendLog(String(format: "Модели загружены за %.1f с (%@), прогрев %.0f мс. Устройства: вход %.1f мс, выход %.1f мс по данным Core Audio.",
+                                              loadTime, computeName, warmMs, engine.io.inputLatencyMs, engine.io.outputLatencyMs))
                     } catch {
                         self.engine = nil
                         self.status = "Ошибка запуска аудио"

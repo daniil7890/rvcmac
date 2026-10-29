@@ -22,17 +22,24 @@ Models without pitch (nono) are not supported yet.
 ## Requirements
 
 - Apple Silicon Mac, macOS 14+.
-- Command Line Tools (`xcode-select --install`). Full Xcode is not needed.
-- Homebrew and `python@3.12` (`brew install python@3.12`).
 - For output to Discord or OBS: [BlackHole](https://github.com/ExistentialAudio/BlackHole) (`brew install blackhole-2ch`).
 
-## Prebuilt app
+## Install
 
-[Releases](https://github.com/daniil7890/rvcmac/releases) contain a prebuilt `RVCMac.app`, built by GitHub Actions for every `v*` tag. The build is ad-hoc signed, so after downloading you need to remove the quarantine flag: `xattr -dr com.apple.quarantine RVCMac.app`.
+1. Download `RVCMac-…-arm64.zip` from [Releases](https://github.com/daniil7890/rvcmac/releases), unzip it and move `RVCMac.app` to Applications.
+2. The build is ad-hoc signed (no Apple Developer ID), so remove the quarantine flag once:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/RVCMac.app
+   ```
+3. Open RVCMac and press **Import…**. On the first import the app downloads its converter by itself: Python plus libraries, about 1 GB, once. Python comes from [python-build-standalone](https://github.com/astral-sh/python-build-standalone) and its SHA-256 is pinned in the build. No Homebrew, Python or repository clone is needed.
 
-You still need the converter to import models: clone the repository to `~/projects/rvcmac` and run step 1 below. The prebuilt app looks for the converter and models in exactly that location.
+Voices, profiles, reports and the converter environment live in `~/Library/Application Support/RVCMac`; deleting the app and that folder removes everything. Voices already in `~/projects/rvcmac` from earlier versions keep being used from there.
+
+The interface is in English or Russian, following the system language. Switch it in Settings (⌘,).
 
 ## Building from source
+
+Command Line Tools are enough (`xcode-select --install`), full Xcode is not needed. For the converter from the Terminal: Homebrew `python@3.12`.
 
 ```bash
 git clone https://github.com/daniil7890/rvcmac.git ~/projects/rvcmac
@@ -50,7 +57,7 @@ The first conversion downloads the [ContentVec](https://huggingface.co/lengyue23
 
 ## Usage
 
-The app interface is in Russian; the original labels are given in parentheses.
+The Russian labels are given in parentheses.
 
 - **Import… (Импорт…)** — pick a `.pth` or `.safetensors` file. A `.index` in the same folder is picked up automatically. The **Index…** button attaches an index manually.
 - **Latency (Задержка)** — Block (Блок), Context (Контекст) and Crossfade (Кроссфейд). Each combination is built once with the **Build (Собрать)** button.

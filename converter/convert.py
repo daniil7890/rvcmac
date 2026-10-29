@@ -366,6 +366,26 @@ def ensure_shared(models_dir, lc: LatencyConfig):
 # ----------------------------------------------------------------------------
 # RVC synthesizer
 # ----------------------------------------------------------------------------
+# Set by --unsafe-pickle. A .pth file is a pickle: loading it with weights_only=False can run
+# arbitrary code from the file, so by default only plain tensors/containers are accepted.
+ALLOW_UNSAFE_PICKLE = False
+
+
+def load_checkpoint(path):
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as e:  # noqa
+        if not ALLOW_UNSAFE_PICKLE:
+            raise SystemExit(
+                f"ERROR: {os.path.basename(path)} contains more than plain weights and was not loaded "
+                f"(safe mode, torch weights_only=True: {type(e).__name__}).\n"
+                "  Prefer a .safetensors version of the model. If you trust where this file came from, "
+                "re-run with --unsafe-pickle."
+            )
+        log("  WARNING: loading with weights_only=False (--unsafe-pickle): the file can execute code")
+        return torch.load(path, map_location="cpu", weights_only=False)
+
+
 def load_rvc(path):
     """Returns (config list, state_dict, version, f0)."""
     if path.endswith(".safetensors"):
@@ -377,7 +397,7 @@ def load_rvc(path):
         version = meta.get("version", "v2" if "v2" in os.path.basename(path) else "v1")
         f0 = int(meta.get("f0", 1))
     else:
-        cpt = torch.load(path, map_location="cpu", weights_only=False)
+        cpt = load_checkpoint(path)
         config = cpt["config"]
         state = cpt["weight"]
         version = cpt.get("version", "v1")
@@ -598,9 +618,13 @@ def main():
             s.add_argument("--name")
             s.add_argument("--sid", type=int, default=0)
             s.add_argument("--index", help="faiss .index (default: auto-detect next to the model)")
-        else:
+        s.add_argument("--unsafe-pickle", action="store_true",
+                       help="allow .pth files that need full pickle loading (can execute code; only for trusted files)")
+        if name != "import":
             s.add_argument("--name", required=True)
     a = p.parse_args()
+    global ALLOW_UNSAFE_PICKLE
+    ALLOW_UNSAFE_PICKLE = bool(getattr(a, "unsafe_pickle", False))
     a.models_dir = os.path.abspath(os.path.expanduser(a.models_dir))
     t0 = time.time()
     try:

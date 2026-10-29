@@ -1,0 +1,29 @@
+name: Build
+
+# Compiles the app and runs the unit tests on every push and pull request.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        working-directory: app
+        run: swift build -c release --arch arm64 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+
+      - name: Warnings
+        if: always()
+        working-directory: app
+        run: grep -E "warning:" build.log | sort -u | head -50 || true
+
+      - name: Unit tests
+        working-directory: app
+        run: swift test

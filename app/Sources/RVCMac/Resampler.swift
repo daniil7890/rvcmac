@@ -2,12 +2,15 @@ import AVFoundation
 import Foundation
 
 /// Mono float32 sample-rate converter built on AVAudioConverter.
+/// PCM buffers are kept between calls and only grow, so steady-state calls do not allocate them.
 final class Resampler {
     let fromRate: Double
     let toRate: Double
     private let converter: AVAudioConverter?
     private let inFormat: AVAudioFormat
     private let outFormat: AVAudioFormat
+    private var inBuf: AVAudioPCMBuffer?
+    private var outBuf: AVAudioPCMBuffer?
 
     init(from: Double, to: Double) {
         fromRate = from
@@ -23,22 +26,39 @@ final class Resampler {
         }
     }
 
-    private func makeInput(_ x: UnsafeBufferPointer<Float>) -> AVAudioPCMBuffer? {
-        guard let buf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: AVAudioFrameCount(max(x.count, 1))) else { return nil }
-        buf.frameLength = AVAudioFrameCount(x.count)
-        if let base = x.baseAddress, x.count > 0 {
-            buf.floatChannelData![0].update(from: base, count: x.count)
+    /// Upper bound of output samples for `n` input samples.
+    func maxOutput(for n: Int) -> Int { Int(Double(n) * toRate / fromRate) + 256 }
+
+    private func input(_ x: UnsafeBufferPointer<Float>) -> AVAudioPCMBuffer? {
+        let need = AVAudioFrameCount(max(x.count, 1))
+        if inBuf == nil || inBuf!.frameCapacity < need {
+            inBuf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: max(need, 4096))
         }
+        guard let buf = inBuf else { return nil }
+        buf.frameLength = AVAudioFrameCount(x.count)
+        if let base = x.baseAddress, x.count > 0 { buf.floatChannelData![0].update(from: base, count: x.count) }
         return buf
     }
 
-    /// Continuous stream conversion: converter state is kept between calls.
-    func stream(_ x: UnsafeBufferPointer<Float>) -> [Float] {
-        guard x.count > 0 else { return [] }
-        guard let converter else { return Array(x) }
-        guard let input = makeInput(x) else { return [] }
-        let cap = AVAudioFrameCount(Double(x.count) * toRate / fromRate + 256)
-        guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: cap) else { return [] }
+    private func output(capacity: Int) -> AVAudioPCMBuffer? {
+        let need = AVAudioFrameCount(capacity)
+        if outBuf == nil || outBuf!.frameCapacity < need {
+            outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: max(need, 4096))
+        }
+        outBuf?.frameLength = 0
+        return outBuf
+    }
+
+    /// Continuous stream conversion (converter state is kept between calls).
+    /// Writes at most `capacity` samples to `dst` and returns how many were written.
+    func stream(_ x: UnsafeBufferPointer<Float>, into dst: UnsafeMutablePointer<Float>, capacity: Int) -> Int {
+        guard x.count > 0, let base = x.baseAddress else { return 0 }
+        guard let converter else {
+            let n = min(x.count, capacity)
+            dst.update(from: base, count: n)
+            return n
+        }
+        guard let inp = input(x), let out = output(capacity: maxOutput(for: x.count)) else { return 0 }
         var fed = false
         var error: NSError?
         _ = converter.convert(to: out, error: &error) { _, status in
@@ -48,23 +68,35 @@ final class Resampler {
             }
             fed = true
             status.pointee = .haveData
-            return input
+            return inp
         }
-        return Array(UnsafeBufferPointer(start: out.floatChannelData![0], count: Int(out.frameLength)))
+        let n = min(Int(out.frameLength), capacity)
+        if n > 0 { dst.update(from: out.floatChannelData![0], count: n) }
+        return n
     }
 
-    /// Converts an independent segment and returns exactly `outCount` samples.
-    func segment(_ x: [Float], outCount: Int) -> [Float] {
+    /// Convenience for non-real-time callers (benchmark file loading).
+    func stream(_ x: [Float]) -> [Float] {
+        var out = [Float](repeating: 0, count: maxOutput(for: x.count))
+        let n = x.withUnsafeBufferPointer { src in
+            out.withUnsafeMutableBufferPointer { stream(src, into: $0.baseAddress!, capacity: $0.count) }
+        }
+        out.removeLast(out.count - n)
+        return out
+    }
+
+    /// Converts an independent segment and writes exactly `outCount` samples to `dst` (zero-padded).
+    func segment(_ x: UnsafeBufferPointer<Float>, into dst: UnsafeMutablePointer<Float>, outCount: Int) {
         guard let converter else {
-            if x.count >= outCount { return Array(x[0..<outCount]) }
-            return x + [Float](repeating: 0, count: outCount - x.count)
+            let n = min(x.count, outCount)
+            if n > 0, let b = x.baseAddress { dst.update(from: b, count: n) }
+            if n < outCount { (dst + n).update(repeating: 0, count: outCount - n) }
+            return
         }
         converter.reset()
-        let input = x.withUnsafeBufferPointer { makeInput($0) }
-        guard let input else { return [Float](repeating: 0, count: outCount) }
-        let cap = AVAudioFrameCount(outCount + 1024)
-        guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: cap) else {
-            return [Float](repeating: 0, count: outCount)
+        guard let inp = input(x), let out = output(capacity: outCount + 1024) else {
+            dst.update(repeating: 0, count: outCount)
+            return
         }
         var fed = false
         var error: NSError?
@@ -75,16 +107,10 @@ final class Resampler {
             }
             fed = true
             status.pointee = .haveData
-            return input
+            return inp
         }
-        let n = Int(out.frameLength)
-        var result = [Float](repeating: 0, count: outCount)
-        let copy = min(n, outCount)
-        if copy > 0 {
-            result.withUnsafeMutableBufferPointer { dst in
-                dst.baseAddress!.update(from: out.floatChannelData![0], count: copy)
-            }
-        }
-        return result
+        let n = min(Int(out.frameLength), outCount)
+        if n > 0 { dst.update(from: out.floatChannelData![0], count: n) }
+        if n < outCount { (dst + n).update(repeating: 0, count: outCount - n) }
     }
 }

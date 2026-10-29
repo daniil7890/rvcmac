@@ -60,7 +60,7 @@ enum SystemProbe {
     }
 
     /// Public APIs give no reliable per-process GPU / Neural Engine load, so reports say so instead of guessing.
-    static let gpuAneNote = "нет публичного API для нагрузки GPU/ANE процесса; смотри Instruments → Core ML / Metal System Trace"
+    static let gpuAneNote = tr("нет публичного API для нагрузки GPU/ANE процесса; смотри Instruments → Core ML / Metal System Trace")
 }
 
 /// Samples CPU %, memory and thermal state about once a second.
@@ -176,8 +176,8 @@ enum BenchmarkError: LocalizedError {
     case tooShort, cancelled
     var errorDescription: String? {
         switch self {
-        case .tooShort: return "Аудиофайл слишком короткий для этого размера блока"
-        case .cancelled: return "Бенчмарк остановлен"
+        case .tooShort: return tr("Аудиофайл слишком короткий для этого размера блока")
+        case .cancelled: return tr("Бенчмарк остановлен")
         }
     }
 }
@@ -226,7 +226,7 @@ enum BenchmarkRunner {
         let monitor = ResourceMonitor()
         monitor.reset()
 
-        progress("Загрузка моделей…")
+        progress(tr("Загрузка моделей…"))
         var t0 = HostTime.now()
         let loaded = try LoadedVoice(voice: voice, config: cfg, units: compute.units)
         let loadMs = HostTime.ms(from: t0, to: HostTime.now())
@@ -242,14 +242,14 @@ enum BenchmarkRunner {
         p.bypass = false
         var times = StageTimes()
 
-        progress("Холодный старт: первый блок…")
+        progress(tr("Холодный старт: первый блок…"))
         t0 = HostTime.now()
         _ = try audio.withUnsafeBufferPointer { a in
             try pipeline.process(UnsafeBufferPointer(start: a.baseAddress!, count: block16), params: p, times: &times)
         }
         let firstBlockMs = HostTime.ms(from: t0, to: HostTime.now())
 
-        progress("Прогрев…")
+        progress(tr("Прогрев…"))
         for i in 0..<options.warmupBlocks {
             if isCancelled() { throw BenchmarkError.cancelled }
             _ = try audio.withUnsafeBufferPointer { a in
@@ -289,7 +289,7 @@ enum BenchmarkRunner {
                     monitor.sample()
                     lastSample = Date()
                 }
-                if b % 20 == 0 { progress("Прогон \(r)/\(options.runs): блок \(b)/\(nBlocks)") }
+                if b % 20 == 0 { progress(trf("Прогон %@/%@: блок %@/%@", "\(r)", "\(options.runs)", "\(b)", "\(nBlocks)")) }
             }
             let wall = HostTime.ms(from: runStart, to: HostTime.now()) / 1000
             let runRows = recorder.rows().filter { $0.run == r }
@@ -320,9 +320,9 @@ enum BenchmarkRunner {
                             latency: ReportMath.latency(rows, deviceInputMs: 0, deviceOutputMs: 0),
                             runs: runs, counters: counters, resources: monitor.summary,
                             notes: [
-                                "Файловый тест: задержка = алгоритмическая + обработка, без устройств и очередей.",
-                                "Порог тишины отключён, чтобы каждый блок проходил через модели.",
-                                "Загрузка моделей включает компиляцию .mlmodelc только если кэш устарел; кэш Neural Engine у macOS свой.",
+                                tr("Файловый тест: задержка = алгоритмическая + обработка, без устройств и очередей."),
+                                tr("Порог тишины отключён, чтобы каждый блок проходил через модели."),
+                                tr("Загрузка моделей включает компиляцию .mlmodelc только если кэш устарел; кэш Neural Engine у macOS свой."),
                             ])
         return BenchmarkResult(report: report, rows: rows, output: output)
     }

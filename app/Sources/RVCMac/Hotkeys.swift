@@ -7,11 +7,11 @@ enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .toggleRun: return "Старт / стоп"
+        case .toggleRun: return tr("Старт / стоп")
         case .mute: return "Mute"
-        case .bypass: return "Без обработки (bypass)"
-        case .pushToTalk: return "Push-to-talk (удерживать)"
-        case .nextProfile: return "Следующий профиль"
+        case .bypass: return tr("Без обработки (bypass)")
+        case .pushToTalk: return tr("Push-to-talk (удерживать)")
+        case .nextProfile: return tr("Следующий профиль")
         }
     }
 }

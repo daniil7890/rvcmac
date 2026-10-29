@@ -26,14 +26,14 @@ public enum Stage: Int, CaseIterable, Codable, Sendable {
 
     public var title: String {
         switch self {
-        case .inputResample: return "Ресемплинг входа"
+        case .inputResample: return tr("Ресемплинг входа")
         case .embedder: return "ContentVec"
-        case .pitch: return "Тон (FCPE)"
-        case .features: return "Признаки / index"
-        case .excitation: return "Возбуждение (NSF)"
-        case .synth: return "Синтезатор RVC"
-        case .output: return "Ресемплинг + SOLA"
-        case .total: return "Блок целиком"
+        case .pitch: return tr("Тон (FCPE)")
+        case .features: return tr("Признаки / index")
+        case .excitation: return tr("Возбуждение (NSF)")
+        case .synth: return tr("Синтезатор RVC")
+        case .output: return tr("Ресемплинг + SOLA")
+        case .total: return tr("Блок целиком")
         }
     }
 }

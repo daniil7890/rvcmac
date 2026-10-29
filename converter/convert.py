@@ -31,7 +31,8 @@ warnings.filterwarnings("ignore")
 torch.set_grad_enabled(False)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RVCMAC_HOME = os.path.dirname(HERE)
+# the app passes its data folder; a checkout falls back to the repository root
+RVCMAC_HOME = os.environ.get("RVCMAC_HOME") or os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 CONTENTVEC_REPO = "lengyue233/content-vec-best"

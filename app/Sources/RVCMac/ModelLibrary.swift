@@ -53,16 +53,35 @@ struct FcpeMeta: Codable {
 }
 
 enum RVCMacPaths {
-    /// Install root: Info.plist key RVCMacHome, or ~/projects/rvcmac.
-    static var home: URL {
+    /// Where voices, the converter environment, reports and settings files live:
+    /// 1. Info.plist key RVCMacHome (local developer builds point it at the checkout),
+    /// 2. ~/projects/rvcmac when it already holds voices from an older version (kept as is, nothing is moved),
+    /// 3. otherwise ~/Library/Application Support/RVCMac.
+    static let home: URL = {
+        let fm = FileManager.default
         if let s = Bundle.main.object(forInfoDictionaryKey: "RVCMacHome") as? String, !s.isEmpty {
             return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
         }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("projects/rvcmac")
-    }
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("RVCMac")
+        let legacy = fm.homeDirectoryForCurrentUser.appendingPathComponent("projects/rvcmac")
+        if !fm.fileExists(atPath: support.path) && fm.fileExists(atPath: legacy.appendingPathComponent("models/voices").path) {
+            return legacy
+        }
+        try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+        return support
+    }()
     static var models: URL { home.appendingPathComponent("models") }
     static var python: URL { home.appendingPathComponent("venv/bin/python") }
-    static var converter: URL { home.appendingPathComponent("converter/convert.py") }
+
+    /// The converter scripts: a checkout's own copy when present (development), otherwise the one inside the app.
+    static var converterDir: URL {
+        let local = home.appendingPathComponent("converter")
+        if FileManager.default.fileExists(atPath: local.appendingPathComponent("convert.py").path) { return local }
+        return Bundle.main.resourceURL?.appendingPathComponent("converter") ?? local
+    }
+    static var converter: URL { converterDir.appendingPathComponent("convert.py") }
+    static var requirements: URL { converterDir.appendingPathComponent("requirements.txt") }
+}
 }
 
 enum ModelLibrary {
@@ -91,16 +110,16 @@ enum ModelLibrary {
         let fm = FileManager.default
         var issues: [String] = []
         let dir = voiceDir(v)
-        if v.configs.isEmpty { issues.append("нет собранных настроек задержки") }
+        if v.configs.isEmpty { issues.append(tr("нет собранных настроек задержки")) }
         var sharedChecked = Set<String>()
         for cfg in v.configs.values.sorted(by: { $0.key < $1.key }) {
             if !fm.fileExists(atPath: dir.appendingPathComponent(cfg.synth).path) {
-                issues.append("\(cfg.key): нет \(cfg.synth)")
+                issues.append(trf("%@: нет %@", "\(cfg.key)", "\(cfg.synth)"))
             }
             if sharedChecked.insert(cfg.shared).inserted {
                 let shared = RVCMacPaths.models.appendingPathComponent(cfg.shared)
                 for f in ["embedder.mlpackage", "fcpe.mlpackage", "fcpe.json"] where !fm.fileExists(atPath: shared.appendingPathComponent(f).path) {
-                    issues.append("\(cfg.key): нет общей модели \(cfg.shared)/\(f)")
+                    issues.append(trf("%@: нет общей модели %@/%@", "\(cfg.key)", "\(cfg.shared)", "\(f)"))
                 }
             }
         }
@@ -108,12 +127,12 @@ enum ModelLibrary {
             let url = dir.appendingPathComponent(idx.file)
             let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int
             if size == nil {
-                issues.append("нет файла индекса \(idx.file)")
+                issues.append(trf("нет файла индекса %@", "\(idx.file)"))
             } else if size != idx.count * idx.dim * 4 {
-                issues.append("размер \(idx.file) не совпадает с voice.json")
+                issues.append(trf("размер %@ не совпадает с voice.json", "\(idx.file)"))
             }
         }
-        if ![256, 768].contains(v.embChannels) { issues.append("неожиданная размерность признаков \(v.embChannels)") }
+        if ![256, 768].contains(v.embChannels) { issues.append(trf("неожиданная размерность признаков %@", "\(v.embChannels)")) }
         return issues
     }
 

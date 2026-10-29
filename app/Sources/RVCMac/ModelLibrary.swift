@@ -1,6 +1,7 @@
 import Accelerate
 import CoreML
 import Foundation
+import RVCMacCore
 
 struct LatencyConfig: Codable, Hashable {
     let key: String
@@ -81,7 +82,6 @@ enum RVCMacPaths {
     }
     static var converter: URL { converterDir.appendingPathComponent("convert.py") }
     static var requirements: URL { converterDir.appendingPathComponent("requirements.txt") }
-}
 }
 
 enum ModelLibrary {

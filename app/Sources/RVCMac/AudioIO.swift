@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import RVCMacCore
 import RVCMacRT
 
 // MARK: - Swift wrappers over the real-time primitives (see RVCMacRT/rvc_rt.h)

@@ -15,6 +15,14 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      - name: No Xcode-only macros
+        # Command Line Tools have no SwiftUI macro plugins, so @State/@Observable/#Preview break local builds
+        run: |
+          if grep -rnE "^[^/]*(@State |@State$|@Observable|@Bindable|@Entry|#Preview)" app/Sources; then
+            echo "::error title=xcode-only macros::these need SwiftUI macro plugins that Command Line Tools do not ship"
+            exit 1
+          fi
+
       - name: Build
         working-directory: app
         run: swift build -c release --arch arm64 2>&1 | tee build.log; exit ${PIPESTATUS[0]}

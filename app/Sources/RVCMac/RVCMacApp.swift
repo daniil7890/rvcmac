@@ -55,11 +55,16 @@ struct RVCMacApp: App {
 
 // MARK: - Main window
 
+/// View-local state (see DiagnosticsUI for why this is not @State).
+final class ContentUI: ObservableObject {
+    @Published var newProfileName = ""
+    @Published var askProfileName = false
+}
+
 struct ContentView: View {
     @EnvironmentObject var s: AppState
     @Environment(\.openWindow) private var openWindow
-    @State private var newProfileName = ""
-    @State private var askProfileName = false
+    @StateObject private var ui = ContentUI()
 
     private let blockOptions = [80, 100, 120, 150, 200, 250, 300, 350, 400, 500]
     private let extraOptions = [200, 300, 500, 750, 1000]
@@ -80,7 +85,7 @@ struct ContentView: View {
                         Button("Сохранить") { s.updateActiveProfile() }
                             .disabled(s.activeProfile == nil)
                             .help("Записать текущие настройки в выбранный профиль")
-                        Button("Новый…") { newProfileName = ""; askProfileName = true }
+                        Button("Новый…") { ui.newProfileName = ""; ui.askProfileName = true }
                         Button(role: .destructive) { s.deleteActiveProfile() } label: { Image(systemName: "trash") }
                             .disabled(s.activeProfile == nil)
                             .help("Удалить профиль")
@@ -191,9 +196,9 @@ struct ContentView: View {
 
             statusBar
         }
-        .alert("Новый профиль", isPresented: $askProfileName) {
-            TextField("Название", text: $newProfileName)
-            Button("Сохранить") { s.saveProfile(named: newProfileName) }
+        .alert("Новый профиль", isPresented: $ui.askProfileName) {
+            TextField("Название", text: $ui.newProfileName)
+            Button("Сохранить") { s.saveProfile(named: ui.newProfileName) }
             Button("Отмена", role: .cancel) {}
         } message: {
             Text("Сохраняет голос, задержку, вычисления и параметры звука.")
@@ -349,40 +354,55 @@ struct SettingsView: View {
 }
 
 /// Click, then press a shortcut. Uses a local key monitor, so it needs no extra permissions.
-struct HotkeyRecorder: View {
-    @Binding var hotkey: Hotkey?
-    @State private var recording = false
-    @State private var monitor: Any?
+final class HotkeyRecorderModel: ObservableObject {
+    @Published var recording = false
+    private var monitor: Any?
 
-    var body: some View {
-        Button(recording ? "Нажми сочетание…" : (hotkey?.display ?? "не задано")) {
-            recording ? stop() : begin()
-        }
-        .frame(minWidth: 150)
-        .onDisappear { stop() }
-    }
-
-    private func begin() {
+    func begin(onKey: @escaping (NSEvent) -> Bool) {
+        stop()
         recording = true
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            switch Int(event.keyCode) {
-            case 53: stop()                       // escape
-            case 51, 117: hotkey = nil; stop()    // delete / forward delete
-            default:
-                if let hk = Hotkey(event: event) {
-                    hotkey = hk
-                    stop()
-                } else {
-                    NSSound.beep()
-                }
-            }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if onKey(event) { self?.stop() }
             return nil
         }
     }
 
-    private func stop() {
+    func stop() {
         recording = false
         if let m = monitor { NSEvent.removeMonitor(m) }
         monitor = nil
+    }
+
+    deinit { if let m = monitor { NSEvent.removeMonitor(m) } }
+}
+
+struct HotkeyRecorder: View {
+    @Binding var hotkey: Hotkey?
+    @StateObject private var model = HotkeyRecorderModel()
+
+    var body: some View {
+        Button(model.recording ? "Нажми сочетание…" : (hotkey?.display ?? "не задано")) {
+            if model.recording {
+                model.stop()
+            } else {
+                let binding = $hotkey
+                // returns true when recording is finished
+                model.begin { event in
+                    switch Int(event.keyCode) {
+                    case 53: return true                               // escape
+                    case 51, 117: binding.wrappedValue = nil; return true  // delete / forward delete
+                    default:
+                        if let hk = Hotkey(event: event) {
+                            binding.wrappedValue = hk
+                            return true
+                        }
+                        NSSound.beep()
+                        return false
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 150)
+        .onDisappear { model.stop() }
     }
 }

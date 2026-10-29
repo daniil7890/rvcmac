@@ -2,13 +2,37 @@ import Charts
 import RVCMacCore
 import SwiftUI
 
+// View-local state lives in small ObservableObjects instead of @State: in recent SDKs @State is a
+// macro whose plugin ships only with Xcode, and the app must build with Command Line Tools alone.
+final class DiagnosticsUI: ObservableObject {
+    @Published var tab = 0
+}
+
+final class CompareModel: ObservableObject {
+    @Published var a: URL? { didSet { load() } }
+    @Published var b: URL? { didSet { load() } }
+    @Published var ra: Report?
+    @Published var rb: Report?
+    @Published var error: String?
+
+    func load() {
+        error = nil
+        do {
+            ra = try a.map { try ReportStore.load($0) }
+            rb = try b.map { try ReportStore.load($0) }
+        } catch {
+            self.error = "Не удалось прочитать отчёт: \(error.localizedDescription)"
+        }
+    }
+}
+
 struct DiagnosticsView: View {
     @EnvironmentObject var s: AppState
-    @State private var tab = 0
+    @StateObject private var ui = DiagnosticsUI()
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
+            Picker("", selection: $ui.tab) {
                 Text("Live").tag(0)
                 Text("Бенчмарк").tag(1)
                 Text("Сравнение").tag(2)
@@ -17,7 +41,7 @@ struct DiagnosticsView: View {
             .labelsHidden()
             .padding(12)
             Divider()
-            switch tab {
+            switch ui.tab {
             case 0: LivePanel()
             case 1: BenchmarkPanel()
             default: ComparePanel()
@@ -246,21 +270,17 @@ struct ReportSummaryView: View {
 
 private struct ComparePanel: View {
     @EnvironmentObject var s: AppState
-    @State private var a: URL?
-    @State private var b: URL?
-    @State private var ra: Report?
-    @State private var rb: Report?
-    @State private var error: String?
+    @StateObject private var m = CompareModel()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                picker("A (до)", $a)
-                picker("B (после)", $b)
+                picker("A (до)", $m.a)
+                picker("B (после)", $m.b)
                 Button { s.refreshReports() } label: { Image(systemName: "arrow.clockwise") }
             }
-            if let error { Text(error).foregroundStyle(.red) }
-            if let ra, let rb {
+            if let error = m.error { Text(error).foregroundStyle(.red) }
+            if let ra = m.ra, let rb = m.rb {
                 let diffs = ReportComparison.configDifferences(ra, rb)
                 if !diffs.isEmpty {
                     Text("Конфигурации различаются — сравнение не на одном стенде: " + diffs.joined(separator: "; "))
@@ -282,8 +302,6 @@ private struct ComparePanel: View {
             }
         }
         .padding(16)
-        .onChange(of: a) { _, _ in load() }
-        .onChange(of: b) { _, _ in load() }
         .onAppear { s.refreshReports() }
     }
 
@@ -291,16 +309,6 @@ private struct ComparePanel: View {
         Picker(title, selection: sel) {
             Text("—").tag(URL?.none)
             ForEach(s.reportFiles, id: \.self) { Text($0.deletingPathExtension().lastPathComponent).tag(URL?.some($0)) }
-        }
-    }
-
-    private func load() {
-        error = nil
-        do {
-            ra = try a.map { try ReportStore.load($0) }
-            rb = try b.map { try ReportStore.load($0) }
-        } catch {
-            self.error = "Не удалось прочитать отчёт: \(error.localizedDescription)"
         }
     }
 }

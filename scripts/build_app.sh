@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$ROOT/build.log"
 exec > >(tee "$LOG") 2>&1
 
-VERSION="0.1.0-dev"
+VERSION="0.2.0-dev"
 RELEASE=0
 if [[ "${1:-}" == "--release" ]]; then
   RELEASE=1

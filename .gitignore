@@ -25,3 +25,4 @@ dist/
 # User data next to a local build
 reports/
 profiles.json
+runtime/

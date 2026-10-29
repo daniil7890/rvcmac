@@ -5,6 +5,10 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // the Dock shows this even when the system icon cache still holds an older build
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -27,7 +31,7 @@ struct RVCMacApp: App {
         }
         .windowResizability(.contentMinSize)
 
-        Window("Диагностика", id: "diagnostics") {
+        Window(tr("Диагностика"), id: "diagnostics") {
             DiagnosticsView()
                 .environmentObject(state)
                 .frame(minWidth: 720, minHeight: 620)
@@ -73,122 +77,122 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("Профиль") {
+                Section(tr("Профиль")) {
                     HStack {
-                        Picker("Профиль", selection: Binding(
+                        Picker(tr("Профиль"), selection: Binding(
                             get: { s.activeProfileID },
                             set: { id in if let p = s.profiles.first(where: { $0.id == id }) { s.applyProfile(p) } else { s.activeProfileID = nil } }
                         )) {
-                            Text("— без профиля —").tag(UUID?.none)
+                            Text(tr("— без профиля —")).tag(UUID?.none)
                             ForEach(s.profiles) { Text($0.name).tag(UUID?.some($0.id)) }
                         }
-                        Button("Сохранить") { s.updateActiveProfile() }
+                        Button(tr("Сохранить")) { s.updateActiveProfile() }
                             .disabled(s.activeProfile == nil)
-                            .help("Записать текущие настройки в выбранный профиль")
-                        Button("Новый…") { ui.newProfileName = ""; ui.askProfileName = true }
+                            .help(tr("Записать текущие настройки в выбранный профиль"))
+                        Button(tr("Новый…")) { ui.newProfileName = ""; ui.askProfileName = true }
                         Button(role: .destructive) { s.deleteActiveProfile() } label: { Image(systemName: "trash") }
                             .disabled(s.activeProfile == nil)
-                            .help("Удалить профиль")
+                            .help(tr("Удалить профиль"))
                     }
                 }
 
-                Section("Голос") {
+                Section(tr("Голос")) {
                     HStack {
-                        Picker("Модель", selection: $s.selectedVoice) {
-                            if s.voices.isEmpty { Text("— нет моделей —").tag("") }
+                        Picker(tr("Модель"), selection: $s.selectedVoice) {
+                            if s.voices.isEmpty { Text(tr("— нет моделей —")).tag("") }
                             ForEach(s.voices, id: \.name) { v in
-                                Text("\(s.voiceIssues[v.name] == nil ? "" : "⚠︎ ")\(v.name)  ·  \(v.version) · \(v.sr / 1000) кГц").tag(v.name)
+                                Text(trf("%@%@  ·  %@ · %@ кГц", "\(s.voiceIssues[v.name] == nil ? "" : "⚠︎ ")", "\(v.name)", "\(v.version)", "\(v.sr / 1000)")).tag(v.name)
                             }
                         }
                         .disabled(s.busy)
-                        .help(s.running ? "Смена голоса на лету: новый голос готовится в фоне и подмешивается кроссфейдом" : "")
+                        .help(s.running ? tr("Смена голоса на лету: новый голос готовится в фоне и подмешивается кроссфейдом") : "")
                         Group {
-                            Button("Импорт…") { s.importModel() }
+                            Button(tr("Импорт…")) { s.importModel() }
                             Button("Index…") { s.addIndex() }
                                 .disabled(s.currentVoice == nil)
-                                .help("Подключить .index к выбранному голосу")
+                                .help(tr("Подключить .index к выбранному голосу"))
                             Button { s.refreshVoices() } label: { Image(systemName: "arrow.clockwise") }
-                                .help("Обновить список")
+                                .help(tr("Обновить список"))
                         }
                         .disabled(s.busy || s.running)
                     }
                     if let issues = s.voiceIssues[s.selectedVoice] {
-                        Text("Проблемы модели: " + issues.joined(separator: "; "))
+                        Text(tr("Проблемы модели: ") + issues.joined(separator: "; "))
                             .foregroundStyle(.orange)
                             .font(.caption)
                     }
                 }
 
-                Section("Задержка") {
+                Section(tr("Задержка")) {
                     HStack {
-                        Picker("Блок", selection: $s.blockMs) {
-                            ForEach(blockOptions, id: \.self) { Text("\($0) мс").tag($0) }
+                        Picker(tr("Блок"), selection: $s.blockMs) {
+                            ForEach(blockOptions, id: \.self) { Text(trf("%@ мс", "\($0)")).tag($0) }
                         }
-                        Picker("Контекст", selection: $s.extraMs) {
-                            ForEach(extraOptions, id: \.self) { Text("\($0) мс").tag($0) }
+                        Picker(tr("Контекст"), selection: $s.extraMs) {
+                            ForEach(extraOptions, id: \.self) { Text(trf("%@ мс", "\($0)")).tag($0) }
                         }
-                        Picker("Кроссфейд", selection: $s.crossfadeMs) {
-                            ForEach(crossfadeOptions, id: \.self) { Text("\($0) мс").tag($0) }
+                        Picker(tr("Кроссфейд"), selection: $s.crossfadeMs) {
+                            ForEach(crossfadeOptions, id: \.self) { Text(trf("%@ мс", "\($0)")).tag($0) }
                         }
                     }
                     .disabled(s.busy || s.running)
                     if s.currentVoice != nil && s.currentConfig == nil {
                         HStack {
-                            Text("Под эти настройки модель ещё не собрана (или собрана старой версией).")
+                            Text(tr("Под эти настройки модель ещё не собрана (или собрана старой версией)."))
                                 .foregroundStyle(.orange)
                             Spacer()
-                            Button("Собрать") { s.convertCurrentConfig() }.disabled(s.busy)
+                            Button(tr("Собрать")) { s.convertCurrentConfig() }.disabled(s.busy)
                         }
                     }
-                    Picker("Вычисления", selection: $s.compute) {
+                    Picker(tr("Вычисления"), selection: $s.compute) {
                         ForEach(ComputeChoice.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .disabled(s.busy || s.running)
                 }
 
-                Section("Аудио") {
+                Section(tr("Аудио")) {
                     HStack {
-                        Picker("Вход", selection: $s.inputUID) {
+                        Picker(tr("Вход"), selection: $s.inputUID) {
                             ForEach(s.inputs) { Text($0.name).tag($0.uid) }
                         }
                         Button { s.refreshDevices() } label: { Image(systemName: "arrow.clockwise") }
-                            .help("Обновить устройства")
+                            .help(tr("Обновить устройства"))
                     }
-                    Picker("Выход", selection: $s.outputUID) {
+                    Picker(tr("Выход"), selection: $s.outputUID) {
                         ForEach(s.outputs) { Text($0.name).tag($0.uid) }
                     }
                 }
                 .disabled(s.busy || s.running)
 
-                Section("Звук") {
-                    LabeledContent("Тон: \(Int(s.pitch.rounded())) пт") {
+                Section(tr("Звук")) {
+                    LabeledContent(trf("Тон: %@ пт", "\(Int(s.pitch.rounded()))")) {
                         Slider(value: $s.pitch, in: -24...24, step: 1)
                     }
-                    LabeledContent("Порог тишины: \(Int(s.gateDB)) дБ") {
+                    LabeledContent(trf("Порог тишины: %@ дБ", "\(Int(s.gateDB))")) {
                         Slider(value: $s.gateDB, in: -90...(-20), step: 1)
                     }
-                    LabeledContent(String(format: "Громкость: %.0f%%", s.gain * 100)) {
+                    LabeledContent(String(format: tr("Громкость: %.0f%%"), s.gain * 100)) {
                         Slider(value: $s.gain, in: 0...2)
                     }
                     if let idx = s.currentVoice?.index {
                         LabeledContent(String(format: "Index: %.2f", s.indexRatio)) {
                             Slider(value: $s.indexRatio, in: 0...1)
                         }
-                        .help("Доля признаков из индекса (\(idx.count) векторов). Больше — ближе к голосу модели, но может «смазывать» дикцию.")
+                        .help(trf("Доля признаков из индекса (%@ векторов). Больше — ближе к голосу модели, но может «смазывать» дикцию.", "\(idx.count)"))
                         LabeledContent(String(format: "Protect: %.2f", s.protect)) {
                             Slider(value: $s.protect, in: 0...0.5)
                         }
-                        .help("Защита глухих согласных и дыхания. 0.5 — выключено.")
+                        .help(tr("Защита глухих согласных и дыхания. 0.5 — выключено."))
                     } else if s.currentVoice != nil {
-                        Text("У голоса нет index — кнопка «Index…» подключит его.")
+                        Text(tr("У голоса нет index — кнопка «Index…» подключит его."))
                             .foregroundStyle(.secondary)
                     }
                     HStack {
-                        Toggle("Без обработки (bypass)", isOn: $s.bypass)
+                        Toggle(tr("Без обработки (bypass)"), isOn: $s.bypass)
                         Spacer()
                         Toggle("Mute", isOn: $s.muted)
                         Toggle("Push-to-talk", isOn: $s.pushToTalk)
-                            .help("Звук идёт, только пока зажата клавиша push-to-talk (Настройки → Горячие клавиши)")
+                            .help(tr("Звук идёт, только пока зажата клавиша push-to-talk (Настройки → Горячие клавиши)"))
                     }
                 }
             }
@@ -196,36 +200,36 @@ struct ContentView: View {
 
             statusBar
         }
-        .alert("Новый профиль", isPresented: $ui.askProfileName) {
-            TextField("Название", text: $ui.newProfileName)
-            Button("Сохранить") { s.saveProfile(named: ui.newProfileName) }
-            Button("Отмена", role: .cancel) {}
+        .alert(tr("Новый профиль"), isPresented: $ui.askProfileName) {
+            TextField(tr("Название"), text: $ui.newProfileName)
+            Button(tr("Сохранить")) { s.saveProfile(named: ui.newProfileName) }
+            Button(tr("Отмена"), role: .cancel) {}
         } message: {
-            Text("Сохраняет голос, задержку, вычисления и параметры звука.")
+            Text(tr("Сохраняет голос, задержку, вычисления и параметры звука."))
         }
     }
 
     private var statusBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                StateBadge(text: s.running ? "МИКРОФОН" : "ОСТАНОВЛЕНО", color: s.running ? .green : .secondary)
+                StateBadge(text: s.running ? tr("МИКРОФОН") : tr("ОСТАНОВЛЕНО"), color: s.running ? .green : .secondary)
                 if s.running {
                     if s.bypass {
                         StateBadge(text: "BYPASS", color: .orange)
                     } else {
-                        StateBadge(text: "ОБРАБОТКА", color: .blue)
+                        StateBadge(text: tr("ОБРАБОТКА"), color: .blue)
                     }
                     if s.effectiveMuted { StateBadge(text: s.pushToTalk && !s.muted ? "PTT" : "MUTE", color: .red) }
                 }
                 if let p = s.activeProfile { StateBadge(text: p.name, color: .purple) }
-                if s.lastError != nil { StateBadge(text: "ОШИБКА", color: .red) }
+                if s.lastError != nil { StateBadge(text: tr("ОШИБКА"), color: .red) }
                 Spacer()
-                Button { openWindow(id: "diagnostics") } label: { Label("Диагностика", systemImage: "gauge.with.dots.needle.33percent") }
+                Button { openWindow(id: "diagnostics") } label: { Label(tr("Диагностика"), systemImage: "gauge.with.dots.needle.33percent") }
                     .controlSize(.small)
             }
             HStack(spacing: 12) {
                 Button(action: { s.toggle() }) {
-                    Label(s.running ? "Стоп" : "Старт", systemImage: s.running ? "stop.fill" : "play.fill")
+                    Label(s.running ? tr("Стоп") : tr("Старт"), systemImage: s.running ? "stop.fill" : "play.fill")
                         .frame(width: 90)
                 }
                 .keyboardShortcut(.space, modifiers: [])
@@ -234,9 +238,17 @@ struct ContentView: View {
                 .tint(s.running ? .red : .accentColor)
                 .disabled(s.busy || s.benchRunning || (!s.running && s.currentConfig == nil))
 
-                if s.busy { ProgressView().controlSize(.small) }
+                if s.setupRunning {
+                    if let f = s.setupProgress {
+                        ProgressView(value: f).frame(width: 120)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } else if s.busy {
+                    ProgressView().controlSize(.small)
+                }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(s.status).lineLimit(1)
+                    Text(s.setupRunning ? s.setupPhase : s.status).lineLimit(1)
                     if s.running {
                         let load = s.stats.blockMs > 0 ? s.stats.processMs / s.stats.blockMs : 0
                         Text(liveLine)
@@ -248,7 +260,7 @@ struct ContentView: View {
             }
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(s.log.isEmpty ? "Лог пуст" : s.log)
+                    Text(s.log.isEmpty ? tr("Лог пуст") : s.log)
                         .font(.system(size: 11, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
@@ -263,10 +275,10 @@ struct ContentView: View {
     }
 
     private var liveLine: String {
-        var parts = [String(format: "обработка %.0f из %.0f мс", s.stats.processMs, s.stats.blockMs)]
-        if s.stats.endToEnd.count > 0 { parts.append(String(format: "задержка ≈%.0f мс", s.stats.endToEnd.p50)) }
-        parts.append(String(format: "вход %.0f дБ", s.stats.inputDB))
-        if s.stats.gated { parts.append("тишина") }
+        var parts = [String(format: tr("обработка %.0f из %.0f мс"), s.stats.processMs, s.stats.blockMs)]
+        if s.stats.endToEnd.count > 0 { parts.append(String(format: tr("задержка ≈%.0f мс"), s.stats.endToEnd.p50)) }
+        parts.append(String(format: tr("вход %.0f дБ"), s.stats.inputDB))
+        if s.stats.gated { parts.append(tr("тишина")) }
         if s.stats.counters.underrunEvents > 0 { parts.append("underrun \(s.stats.counters.underrunEvents)") }
         return parts.joined(separator: " · ")
     }
@@ -292,15 +304,15 @@ struct MenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Text(s.running ? "Работает: \(s.selectedVoice)" : "Остановлено")
+        Text(s.running ? trf("Работает: %@", "\(s.selectedVoice)") : tr("Остановлено"))
         if s.running, s.stats.endToEnd.count > 0 {
-            Text(String(format: "Задержка ≈%.0f мс · обработка %.0f мс", s.stats.endToEnd.p50, s.stats.processMs))
+            Text(String(format: tr("Задержка ≈%.0f мс · обработка %.0f мс"), s.stats.endToEnd.p50, s.stats.processMs))
         }
         Divider()
-        Button(s.running ? "Стоп" : "Старт") { s.toggle() }
+        Button(s.running ? tr("Стоп") : tr("Старт")) { s.toggle() }
             .disabled(s.busy || s.benchRunning || (!s.running && s.currentConfig == nil))
         Toggle("Mute", isOn: $s.muted)
-        Toggle("Без обработки", isOn: $s.bypass)
+        Toggle(tr("Без обработки"), isOn: $s.bypass)
         Toggle("Push-to-talk", isOn: $s.pushToTalk)
         if !s.profiles.isEmpty {
             Divider()
@@ -309,10 +321,10 @@ struct MenuBarContent: View {
             }
         }
         Divider()
-        Button("Открыть RVCMac") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
-        Button("Диагностика") { openWindow(id: "diagnostics"); NSApp.activate(ignoringOtherApps: true) }
+        Button(tr("Открыть RVCMac")) { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        Button(tr("Диагностика")) { openWindow(id: "diagnostics"); NSApp.activate(ignoringOtherApps: true) }
         Divider()
-        Button("Выйти") { s.stop(); NSApp.terminate(nil) }
+        Button(tr("Выйти")) { s.stop(); NSApp.terminate(nil) }
     }
 }
 
@@ -323,33 +335,58 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Горячие клавиши (работают глобально)") {
+            Section(tr("Горячие клавиши (работают глобально)")) {
                 ForEach(HotkeyAction.allCases) { action in
                     LabeledContent(action.title) {
                         HStack {
                             HotkeyRecorder(hotkey: Binding(get: { s.hotkeys[action] }, set: { s.hotkeys[action] = $0 }))
                             if s.hotkeyFailures.contains(action) {
                                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                                    .help("Сочетание занято другим приложением")
+                                    .help(tr("Сочетание занято другим приложением"))
                             }
                         }
                     }
                 }
-                Button("Сбросить по умолчанию") { s.resetHotkeys() }
-                Text("Нажми на поле и затем сочетание. Нужен хотя бы один модификатор (⌘⌥⌃⇧), кроме F-клавиш. ⌫ — очистить, ⎋ — отмена.")
+                Button(tr("Сбросить по умолчанию")) { s.resetHotkeys() }
+                Text(tr("Нажми на поле и затем сочетание. Нужен хотя бы один модификатор (⌘⌥⌃⇧), кроме F-клавиш. ⌫ — очистить, ⎋ — отмена."))
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Окно") {
-                Toggle("Оставаться в строке меню после закрытия окна", isOn: $s.keepInMenuBar)
+            Section(tr("Язык")) {
+                Picker(tr("Язык интерфейса"), selection: $s.language) {
+                    Text(tr("Как в системе")).tag(AppLanguage.system)
+                    Text(verbatim: "Русский").tag(AppLanguage.ru)
+                    Text(verbatim: "English").tag(AppLanguage.en)
+                }
+                Text(tr("Окна и настройки переключаются сразу, меню приложения — после перезапуска."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Отчёты и приватность") {
-                Toggle("Не сохранять в отчётах имена устройств и пути к файлам", isOn: $s.anonymizeReports)
-                Text("Аудио обрабатывается только локально. В лог и отчёты звук не пишется; WAV сохраняется лишь по флажку в бенчмарке.")
+            Section(tr("Конвертер моделей")) {
+                LabeledContent(tr("Состояние")) {
+                    Text(s.setupRunning ? s.setupPhase : (s.converterReady ? tr("установлен") : tr("не установлен — поставится при первом импорте")))
+                }
+                LabeledContent(tr("Папка данных")) {
+                    Text(RVCMacPaths.home.path).textSelection(.enabled).font(.caption.monospaced())
+                }
+                HStack {
+                    if s.converterReady {
+                        Button(tr("Переустановить")) { s.reinstallConverter() }.disabled(s.setupRunning || s.busy)
+                    } else {
+                        Button(tr("Установить сейчас")) { s.installConverter() }.disabled(s.setupRunning || s.busy)
+                    }
+                    Button(tr("Открыть папку данных")) { s.revealDataFolder() }
+                }
+            }
+            Section(tr("Окно")) {
+                Toggle(tr("Оставаться в строке меню после закрытия окна"), isOn: $s.keepInMenuBar)
+            }
+            Section(tr("Отчёты и приватность")) {
+                Toggle(tr("Не сохранять в отчётах имена устройств и пути к файлам"), isOn: $s.anonymizeReports)
+                Text(tr("Аудио обрабатывается только локально. В лог и отчёты звук не пишется; WAV сохраняется лишь по флажку в бенчмарке."))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 480)
+        .frame(width: 600, height: 640)
     }
 }
 
@@ -381,7 +418,7 @@ struct HotkeyRecorder: View {
     @StateObject private var model = HotkeyRecorderModel()
 
     var body: some View {
-        Button(model.recording ? "Нажми сочетание…" : (hotkey?.display ?? "не задано")) {
+        Button(model.recording ? tr("Нажми сочетание…") : (hotkey?.display ?? tr("не задано"))) {
             if model.recording {
                 model.stop()
             } else {

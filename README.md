@@ -22,17 +22,24 @@
 ## Требования
 
 - Mac на Apple Silicon, macOS 14+.
-- Command Line Tools (`xcode-select --install`). Полный Xcode не нужен.
-- Homebrew и `python@3.12` (`brew install python@3.12`).
 - Для вывода в Discord или OBS: [BlackHole](https://github.com/ExistentialAudio/BlackHole) (`brew install blackhole-2ch`).
 
-## Готовая сборка
+## Установка
 
-В [Releases](https://github.com/daniil7890/rvcmac/releases) лежит собранный `RVCMac.app`. Его собирает GitHub Actions на каждый тег `v*`. Сборка подписана ad-hoc, поэтому после скачивания нужно снять карантин: `xattr -dr com.apple.quarantine RVCMac.app`.
+1. Скачай `RVCMac-…-arm64.zip` из [Releases](https://github.com/daniil7890/rvcmac/releases), распакуй и перенеси `RVCMac.app` в «Программы».
+2. Сборка подписана ad-hoc (без Apple Developer ID), поэтому один раз сними карантин:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/RVCMac.app
+   ```
+3. Открой RVCMac и нажми «Импорт…». При первом импорте приложение само скачает конвертер: Python и библиотеки, около 1 ГБ, один раз. Python берётся из [python-build-standalone](https://github.com/astral-sh/python-build-standalone), его SHA-256 зашит в сборку. Ставить Homebrew, Python или клонировать репозиторий не нужно.
 
-Для импорта моделей всё равно нужен конвертер: клонируй репозиторий в `~/projects/rvcmac` и выполни шаг 1 ниже. Готовая сборка ищет конвертер и модели именно там.
+Голоса, профили, отчёты и окружение конвертера лежат в `~/Library/Application Support/RVCMac`. Удалить всё — значит удалить приложение и эту папку. Если голоса уже лежат в `~/projects/rvcmac` от прошлых версий, приложение продолжит брать их оттуда.
 
-## Установка из исходников
+Язык интерфейса — русский или английский, по языку системы. Переключается в Настройках (⌘,).
+
+## Сборка из исходников
+
+Нужны Command Line Tools (`xcode-select --install`), полный Xcode не требуется. Для конвертера из Терминала — Homebrew `python@3.12`.
 
 ```bash
 git clone https://github.com/daniil7890/rvcmac.git ~/projects/rvcmac

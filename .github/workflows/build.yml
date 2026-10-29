@@ -43,9 +43,16 @@ jobs:
         working-directory: app
         run: python3 ../scripts/ci_annotate.py test.log notice "Executed [0-9]+ tests" "tests"
 
-      - name: Assemble RVCMac.app
+      - name: Assemble release-style RVCMac.app
         if: success()
-        run: bash scripts/build_app.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/build_app.sh --release 0.0.0-ci
+          plutil -p RVCMac.app/Contents/Info.plist | grep -E "RVCMacPython|CFBundleIconFile"
+          test -f RVCMac.app/Contents/Resources/converter/convert.py
+          test -f RVCMac.app/Contents/Resources/AppIcon.icns
+          echo "::notice title=bundle::$(du -sh RVCMac.app | cut -f1) app, $(plutil -extract RVCMacPythonURL raw RVCMac.app/Contents/Info.plist)"
 
       - name: Test failures as annotation
         if: failure()

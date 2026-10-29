@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import RVCMacCore
 import RVCMacRT
 
 // MARK: - Swift wrappers over the real-time primitives (see RVCMacRT/rvc_rt.h)
@@ -256,8 +257,8 @@ final class AudioIO {
     // MARK: device listeners (main queue, never on the audio thread)
 
     private func installListeners() {
-        let inName = AudioDevices.device(for: inputID)?.name ?? "вход"
-        let outName = AudioDevices.device(for: outputID)?.name ?? "выход"
+        let inName = AudioDevices.device(for: inputID)?.name ?? tr("вход")
+        let outName = AudioDevices.device(for: outputID)?.name ?? tr("выход")
         var seen = Set<AudioDeviceID>()
         for (id, name, rate) in [(inputID, inName, inputRate), (outputID, outName, outputRate)] where seen.insert(id).inserted {
             listen(id, kAudioDevicePropertyDeviceIsAlive) { [weak self] in

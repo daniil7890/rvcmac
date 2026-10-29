@@ -79,6 +79,7 @@ final class RecorderTests: XCTestCase {
 }
 
 final class ReportTests: XCTestCase {
+    override func setUp() { Loc.language = .ru }
     private func report(block: Int, p50: Double) -> Report {
         let d = Distribution(count: 10, min: p50, max: p50, mean: p50, p50: p50, p95: p50, p99: p50)
         return Report(kind: .file, createdAt: Date(timeIntervalSince1970: 0), appVersion: "test",
@@ -174,5 +175,70 @@ final class RingBufferTests: XCTestCase {
         XCTAssertEqual(p, 480)
         XCTAssertEqual(h, 123_456)
         XCTAssertGreaterThan(rvc_host_delta_ms(0, rvc_host_now()), 0)
+    }
+}
+
+final class L10nTests: XCTestCase {
+    private var sources: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+    }
+
+    private func swiftFiles() throws -> [URL] {
+        let e = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)!
+        return e.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" && $0.lastPathComponent != "L10n.swift" }
+    }
+
+    private func specifiers(_ s: String) -> [String] {
+        let re = try! NSRegularExpression(pattern: "%(?:%|[-+ #0]*\\d*(?:\\.\\d+)?[@dfsi])")
+        return re.matches(in: s, range: NSRange(s.startIndex..., in: s))
+            .map { String(s[Range($0.range, in: s)!]) }.filter { $0 != "%%" }
+    }
+
+    func testEveryKeyHasEnglishWithSameSpecifiers() throws {
+        let re = try NSRegularExpression(pattern: #"\btrf?\("((?:[^"\\]|\\.)*)""#)
+        var keys = Set<String>()
+        for f in try swiftFiles() {
+            let src = try String(contentsOf: f, encoding: .utf8)
+            for m in re.matches(in: src, range: NSRange(src.startIndex..., in: src)) {
+                let raw = String(src[Range(m.range(at: 1), in: src)!])
+                keys.insert(raw.replacingOccurrences(of: "\\\"", with: "\""))
+            }
+        }
+        XCTAssertGreaterThan(keys.count, 100)
+        for k in keys {
+            guard let en = Loc.english[k] else { XCTFail("no English for: \(k)"); continue }
+            XCTAssertEqual(specifiers(k), specifiers(en), "format specifiers differ: \(k)")
+        }
+    }
+
+    func testNoCyrillicLiteralBypassesTr() throws {
+        let literal = try NSRegularExpression(pattern: #""((?:[^"\\]|\\.)*)""#)
+        let cyr = try NSRegularExpression(pattern: "[а-яА-ЯёЁ]")
+        for f in try swiftFiles() {
+            let lines = try String(contentsOf: f, encoding: .utf8).components(separatedBy: "\n")
+            for (i, line) in lines.enumerated() {
+                let code = line.trimmingCharacters(in: .whitespaces)
+                if code.hasPrefix("//") { continue }
+                for m in literal.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+                    let text = String(line[Range(m.range, in: line)!])
+                    guard cyr.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil else { continue }
+                    let before = String(line[..<Range(m.range, in: line)!.lowerBound])
+                    let ok = before.hasSuffix("tr(") || before.hasSuffix("trf(") || before.hasSuffix("verbatim: ")
+                    XCTAssertTrue(ok, "\(f.lastPathComponent):\(i + 1) untranslated literal \(text)")
+                }
+            }
+        }
+    }
+
+    func testSwitching() {
+        let saved = Loc.language
+        defer { Loc.language = saved }
+        Loc.language = .en
+        XCTAssertEqual(tr("Старт"), "Start")
+        XCTAssertEqual(trf("Прогонов: %@", "3"), "Runs: 3")
+        Loc.language = .ru
+        XCTAssertEqual(tr("Старт"), "Старт")
+        XCTAssertEqual(Stage.synth.title, "Синтезатор RVC")
     }
 }

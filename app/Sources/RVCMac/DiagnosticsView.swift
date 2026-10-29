@@ -21,7 +21,7 @@ final class CompareModel: ObservableObject {
             ra = try a.map { try ReportStore.load($0) }
             rb = try b.map { try ReportStore.load($0) }
         } catch {
-            self.error = "Не удалось прочитать отчёт: \(error.localizedDescription)"
+            self.error = trf("Не удалось прочитать отчёт: %@", "\(error.localizedDescription)")
         }
     }
 }
@@ -34,8 +34,8 @@ struct DiagnosticsView: View {
         VStack(spacing: 0) {
             Picker("", selection: $ui.tab) {
                 Text("Live").tag(0)
-                Text("Бенчмарк").tag(1)
-                Text("Сравнение").tag(2)
+                Text(tr("Бенчмарк")).tag(1)
+                Text(tr("Сравнение")).tag(2)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -61,7 +61,7 @@ private struct LivePanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if !s.running {
-                    Text("Запусти обработку, чтобы увидеть метрики. Отчёт последней сессии можно сохранить и после остановки.")
+                    Text(tr("Запусти обработку, чтобы увидеть метрики. Отчёт последней сессии можно сохранить и после остановки."))
                         .foregroundStyle(.secondary)
                 }
                 latencyBox
@@ -69,9 +69,9 @@ private struct LivePanel: View {
                 stagesBox
                 countersBox
                 HStack {
-                    Button("Сохранить отчёт сессии (JSON + CSV)") { s.exportSessionReport() }
+                    Button(tr("Сохранить отчёт сессии (JSON + CSV)")) { s.exportSessionReport() }
                         .disabled(!s.canExportSession)
-                    Button("Открыть папку отчётов") { s.revealReports() }
+                    Button(tr("Открыть папку отчётов")) { s.revealReports() }
                 }
             }
             .padding(16)
@@ -79,31 +79,31 @@ private struct LivePanel: View {
     }
 
     private var latencyBox: some View {
-        GroupBox("Задержка (последние 64 блока)") {
+        GroupBox(tr("Задержка (последние 64 блока)")) {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
                 GridRow {
                     Text("").gridColumnAlignment(.leading)
-                    Text("p50").bold(); Text("p95").bold(); Text("p99").bold(); Text("макс").bold()
+                    Text("p50").bold(); Text("p95").bold(); Text("p99").bold(); Text(tr("макс")).bold()
                 }
-                row("Полная (оценка)", s.stats.endToEnd)
-                row("Конвейер: захват → вывод", s.stats.pipeline)
+                row(tr("Полная (оценка)"), s.stats.endToEnd)
+                row(tr("Конвейер: захват → вывод"), s.stats.pipeline)
                 GridRow {
-                    Text("Алгоритмическая (блок + кроссфейд + SOLA)")
+                    Text(tr("Алгоритмическая (блок + кроссфейд + SOLA)"))
                     Text(ms(s.stats.algorithmicMs)); Text(""); Text(""); Text("")
                 }
                 GridRow {
-                    Text("Устройства (Core Audio: вход / выход)")
+                    Text(tr("Устройства (Core Audio: вход / выход)"))
                     Text(ms(s.stats.deviceInputMs)); Text(ms(s.stats.deviceOutputMs)); Text(""); Text("")
                 }
                 GridRow {
-                    Text("Очередь вывода сейчас")
+                    Text(tr("Очередь вывода сейчас"))
                     Text(ms(s.stats.outputQueueMs)); Text(""); Text(""); Text("")
                 }
             }
             .font(.callout.monospacedDigit())
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)
-            Text("Полная = конвейер + алгоритмическая + устройства. Буферы IO: вход \(s.stats.inputBufferFrames), выход \(s.stats.outputBufferFrames) кадров.")
+            Text(trf("Полная = конвейер + алгоритмическая + устройства. Буферы IO: вход %@, выход %@ кадров.", "\(s.stats.inputBufferFrames)", "\(s.stats.outputBufferFrames)"))
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -119,30 +119,30 @@ private struct LivePanel: View {
     }
 
     private var chartBox: some View {
-        GroupBox("Задержка и обработка во времени, мс") {
+        GroupBox(tr("Задержка и обработка во времени, мс")) {
             Chart {
                 ForEach(s.chart) { p in
                     if p.endToEnd.isFinite {
-                        LineMark(x: .value("t", p.t), y: .value("мс", p.endToEnd), series: .value("ряд", "Полная p50"))
-                            .foregroundStyle(by: .value("ряд", "Полная p50"))
+                        LineMark(x: .value("t", p.t), y: .value(tr("мс"), p.endToEnd), series: .value(tr("ряд"), tr("Полная p50")))
+                            .foregroundStyle(by: .value(tr("ряд"), tr("Полная p50")))
                     }
-                    LineMark(x: .value("t", p.t), y: .value("мс", p.processMs), series: .value("ряд", "Обработка (макс)"))
-                        .foregroundStyle(by: .value("ряд", "Обработка (макс)"))
+                    LineMark(x: .value("t", p.t), y: .value(tr("мс"), p.processMs), series: .value(tr("ряд"), tr("Обработка (макс)")))
+                        .foregroundStyle(by: .value(tr("ряд"), tr("Обработка (макс)")))
                 }
                 if s.stats.blockMs > 0 {
-                    RuleMark(y: .value("блок", s.stats.blockMs))
+                    RuleMark(y: .value(tr("блок"), s.stats.blockMs))
                         .foregroundStyle(.red.opacity(0.5))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 }
             }
-            .chartXAxisLabel("секунды")
+            .chartXAxisLabel(tr("секунды"))
             .frame(height: 180)
             .padding(4)
         }
     }
 
     private var stagesBox: some View {
-        GroupBox("Этапы обработки блока (только блоки с инференсом), мс") {
+        GroupBox(tr("Этапы обработки блока (только блоки с инференсом), мс")) {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
                 GridRow { Text(""); Text("p50").bold(); Text("p95").bold() }
                 ForEach(Stage.allCases, id: \.rawValue) { st in
@@ -160,21 +160,21 @@ private struct LivePanel: View {
     }
 
     private var countersBox: some View {
-        GroupBox("Стабильность и ресурсы") {
+        GroupBox(tr("Стабильность и ресурсы")) {
             let c = s.stats.counters
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
-                GridRow { Text("Блоков"); Text("\(c.blocks)") }
-                GridRow { Text("Underrun вывода (события / кадры)"); Text("\(c.underrunEvents) / \(c.underrunFrames)") }
-                GridRow { Text("Переполнение входа (кадры)"); Text("\(c.inputOverflowFrames)") }
-                GridRow { Text("Пропущено входа, чтобы догнать"); Text(String(format: "%.0f мс", c.skippedInputMs)) }
-                GridRow { Text("Обрезано вывода (кадры)"); Text("\(c.outputTrimFrames)") }
-                GridRow { Text("Перегрузки IO (HAL overload)"); Text("\(s.stats.overloads)") }
-                GridRow { Text("Смен голоса"); Text("\(c.modelSwitches)") }
+                GridRow { Text(tr("Блоков")); Text("\(c.blocks)") }
+                GridRow { Text(tr("Underrun вывода (события / кадры)")); Text("\(c.underrunEvents) / \(c.underrunFrames)") }
+                GridRow { Text(tr("Переполнение входа (кадры)")); Text("\(c.inputOverflowFrames)") }
+                GridRow { Text(tr("Пропущено входа, чтобы догнать")); Text(String(format: tr("%.0f мс"), c.skippedInputMs)) }
+                GridRow { Text(tr("Обрезано вывода (кадры)")); Text("\(c.outputTrimFrames)") }
+                GridRow { Text(tr("Перегрузки IO (HAL overload)")); Text("\(s.stats.overloads)") }
+                GridRow { Text(tr("Смен голоса")); Text("\(c.modelSwitches)") }
                 Divider()
-                GridRow { Text("CPU процесса"); Text(String(format: "%.0f%% ядра", s.resources.cpuPercent)) }
-                GridRow { Text("Память"); Text(String(format: "%.0f МБ", s.resources.memoryMB)) }
-                GridRow { Text("Тепловое состояние"); Text(s.resources.thermal) }
-                GridRow { Text("GPU / Neural Engine"); Text("нет публичного API — см. Instruments").foregroundStyle(.secondary) }
+                GridRow { Text(tr("CPU процесса")); Text(String(format: tr("%.0f%% ядра"), s.resources.cpuPercent)) }
+                GridRow { Text(tr("Память")); Text(String(format: tr("%.0f МБ"), s.resources.memoryMB)) }
+                GridRow { Text(tr("Тепловое состояние")); Text(s.resources.thermal) }
+                GridRow { Text("GPU / Neural Engine"); Text(tr("нет публичного API — см. Instruments")).foregroundStyle(.secondary) }
             }
             .font(.callout.monospacedDigit())
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -191,35 +191,35 @@ private struct BenchmarkPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GroupBox("Параметры") {
+                GroupBox(tr("Параметры")) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Вход: \(s.benchFile?.lastPathComponent ?? "синтетический голосоподобный сигнал, 20 с")")
+                            Text(trf("Вход: %@", s.benchFile?.lastPathComponent ?? tr("синтетический голосоподобный сигнал, 20 с")))
                                 .lineLimit(1)
                             Spacer()
-                            Button("Выбрать файл…") { s.chooseBenchmarkFile() }
-                            if s.benchFile != nil { Button("Сбросить") { s.benchFile = nil } }
+                            Button(tr("Выбрать файл…")) { s.chooseBenchmarkFile() }
+                            if s.benchFile != nil { Button(tr("Сбросить")) { s.benchFile = nil } }
                         }
-                        Stepper("Прогонов: \(s.benchRuns)", value: $s.benchRuns, in: 1...10)
-                        Toggle("Подавать блоки в реальном темпе (как live)", isOn: $s.benchPacing)
-                        Toggle("Сохранить результат первого прогона в WAV", isOn: $s.benchSaveAudio)
-                        Text("Голос, задержка, вычисления и параметры звука берутся из главного окна. Порог тишины в тесте отключён. Холодный старт (загрузка моделей и первый блок) измеряется отдельно, затем прогрев 10 блоков.")
+                        Stepper(trf("Прогонов: %@", "\(s.benchRuns)"), value: $s.benchRuns, in: 1...10)
+                        Toggle(tr("Подавать блоки в реальном темпе (как live)"), isOn: $s.benchPacing)
+                        Toggle(tr("Сохранить результат первого прогона в WAV"), isOn: $s.benchSaveAudio)
+                        Text(tr("Голос, задержка, вычисления и параметры звука берутся из главного окна. Порог тишины в тесте отключён. Холодный старт (загрузка моделей и первый блок) измеряется отдельно, затем прогрев 10 блоков."))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(4)
                 }
                 HStack {
                     if s.benchRunning {
-                        Button("Остановить") { s.cancelBenchmark() }
+                        Button(tr("Остановить")) { s.cancelBenchmark() }
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Запустить бенчмарк") { s.runBenchmark() }
+                        Button(tr("Запустить бенчмарк")) { s.runBenchmark() }
                             .buttonStyle(.borderedProminent)
                             .disabled(s.running || s.currentConfig == nil)
                     }
                     Text(s.benchProgress).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Открыть папку отчётов") { s.revealReports() }
+                    Button(tr("Открыть папку отчётов")) { s.revealReports() }
                 }
                 if let r = s.lastReport { ReportSummaryView(report: r) }
             }
@@ -232,13 +232,13 @@ struct ReportSummaryView: View {
     let report: Report
 
     var body: some View {
-        GroupBox("\(report.kind == .live ? "Сессия" : "Бенчмарк"): \(report.model.name) · блок \(report.config.blockMs) мс · \(report.config.compute)") {
+        GroupBox(trf("%@: %@ · блок %@ мс · %@", report.kind == .live ? tr("Сессия") : tr("Бенчмарк"), "\(report.model.name)", "\(report.config.blockMs)", "\(report.config.compute)")) {
             VStack(alignment: .leading, spacing: 8) {
                 if let c = report.coldStart {
-                    Text("Холодный старт: загрузка \(ms(c.loadMs)) мс, первый блок \(ms(c.firstBlockMs)) мс")
+                    Text(trf("Холодный старт: загрузка %@ мс, первый блок %@ мс", "\(ms(c.loadMs))", "\(ms(c.firstBlockMs))"))
                 }
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
-                    GridRow { Text(""); Text("p50").bold(); Text("p95").bold(); Text("p99").bold(); Text("макс").bold() }
+                    GridRow { Text(""); Text("p50").bold(); Text("p95").bold(); Text("p99").bold(); Text(tr("макс")).bold() }
                     ForEach(Stage.allCases, id: \.rawValue) { st in
                         if let d = report.stages[st.key], d.count > 0 {
                             GridRow { Text(st.title); Text(ms(d.p50)); Text(ms(d.p95)); Text(ms(d.p99)); Text(ms(d.max)) }
@@ -246,18 +246,18 @@ struct ReportSummaryView: View {
                     }
                     if let l = report.latency, l.endToEnd.count > 0 {
                         GridRow {
-                            Text(report.kind == .live ? "Полная задержка" : "Обработка + алгоритмическая").bold()
+                            Text(report.kind == .live ? tr("Полная задержка") : tr("Обработка + алгоритмическая")).bold()
                             Text(ms(l.endToEnd.p50)); Text(ms(l.endToEnd.p95)); Text(ms(l.endToEnd.p99)); Text(ms(l.endToEnd.max))
                         }
                     }
                 }
                 .font(.callout.monospacedDigit())
                 ForEach(report.runs, id: \.index) { r in
-                    Text(String(format: "Прогон %d: %d блоков, RTF %.2f, блок p95 %.1f мс", r.index, r.blocks, r.realTimeFactor,
+                    Text(String(format: tr("Прогон %d: %d блоков, RTF %.2f, блок p95 %.1f мс"), r.index, r.blocks, r.realTimeFactor,
                                 r.stages[Stage.total.key]?.p95 ?? .nan))
                         .font(.caption.monospacedDigit())
                 }
-                Text("Underrun: \(report.counters.underrunEvents) · тепло: \(report.system.thermalStart) → \(report.system.thermalEnd) · \(report.system.machine), macOS \(report.system.macOS)")
+                Text(trf("Underrun: %@ · тепло: %@ → %@ · %@, macOS %@", "\(report.counters.underrunEvents)", "\(report.system.thermalStart)", "\(report.system.thermalEnd)", "\(report.system.machine)", "\(report.system.macOS)"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -275,19 +275,19 @@ private struct ComparePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                picker("A (до)", $m.a)
-                picker("B (после)", $m.b)
+                picker(tr("A (до)"), $m.a)
+                picker(tr("B (после)"), $m.b)
                 Button { s.refreshReports() } label: { Image(systemName: "arrow.clockwise") }
             }
             if let error = m.error { Text(error).foregroundStyle(.red) }
             if let ra = m.ra, let rb = m.rb {
                 let diffs = ReportComparison.configDifferences(ra, rb)
                 if !diffs.isEmpty {
-                    Text("Конфигурации различаются — сравнение не на одном стенде: " + diffs.joined(separator: "; "))
+                    Text(tr("Конфигурации различаются — сравнение не на одном стенде: ") + diffs.joined(separator: "; "))
                         .foregroundStyle(.orange).font(.caption)
                 }
                 Table(ReportComparison.rows(ra, rb)) {
-                    TableColumn("Метрика") { Text($0.metric) }
+                    TableColumn(tr("Метрика")) { Text($0.metric) }
                     TableColumn("A") { Text(ms($0.a)).monospacedDigit() }
                     TableColumn("B") { Text(ms($0.b)).monospacedDigit() }
                     TableColumn("Δ") { r in
@@ -297,7 +297,7 @@ private struct ComparePanel: View {
                     }
                 }
             } else {
-                Text("Выбери два отчёта. Меньше — лучше для всех метрик в таблице.").foregroundStyle(.secondary)
+                Text(tr("Выбери два отчёта. Меньше — лучше для всех метрик в таблице.")).foregroundStyle(.secondary)
                 Spacer()
             }
         }

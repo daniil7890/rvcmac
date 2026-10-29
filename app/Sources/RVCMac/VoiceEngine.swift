@@ -145,7 +145,7 @@ final class VoiceEngine {
         if threadActive {
             // the worker finishes its current block (at most one inference) and exits
             if finished.wait(timeout: .now() + 3) == .timedOut {
-                onError?("Поток обработки не завершился за 3 с")
+                onError?(tr("Поток обработки не завершился за 3 с"))
             }
             threadActive = false
         }
@@ -157,7 +157,7 @@ final class VoiceEngine {
     /// The active voice keeps playing until the worker switches at the next block boundary.
     func switchModel(to model: LoadedVoice) throws {
         guard model.config.key == currentModel.config.key else {
-            throw NSError(domain: "RVCMac", code: 20, userInfo: [NSLocalizedDescriptionKey: "Переключение на лету требует одинаковых настроек задержки"])
+            throw NSError(domain: "RVCMac", code: 20, userInfo: [NSLocalizedDescriptionKey: tr("Переключение на лету требует одинаковых настроек задержки")])
         }
         let state = try ModelState(model: model, outRate: io.outputRate)
         swapLock.withLockUnchecked { $0 = (state, HostTime.now()) }
@@ -305,7 +305,7 @@ final class VoiceEngine {
             do {
                 result = try pipeline.process(UnsafeBufferPointer(start: acc, count: block16), params: p, times: &times)
             } catch {
-                onError?("Ошибка инференса: \(error.localizedDescription)")
+                onError?(trf("Ошибка инференса: %@", "\(error.localizedDescription)"))
                 running.withLock { $0 = false }
                 break
             }

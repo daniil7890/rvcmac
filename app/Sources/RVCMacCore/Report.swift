@@ -210,15 +210,15 @@ public enum ReportComparison {
     public static func configDifferences(_ a: Report, _ b: Report) -> [String] {
         var d: [String] = []
         func cmp<T: Equatable>(_ name: String, _ x: T, _ y: T) { if x != y { d.append("\(name): \(x) → \(y)") } }
-        cmp("модель", a.model.name, b.model.name)
-        cmp("вычисления", a.config.compute, b.config.compute)
-        cmp("блок, мс", a.config.blockMs, b.config.blockMs)
-        cmp("контекст, мс", a.config.extraMs, b.config.extraMs)
-        cmp("кроссфейд, мс", a.config.crossfadeMs, b.config.crossfadeMs)
-        cmp("частота выхода", Int(a.config.outputRate), Int(b.config.outputRate))
+        cmp(tr("модель"), a.model.name, b.model.name)
+        cmp(tr("вычисления"), a.config.compute, b.config.compute)
+        cmp(tr("блок, мс"), a.config.blockMs, b.config.blockMs)
+        cmp(tr("контекст, мс"), a.config.extraMs, b.config.extraMs)
+        cmp(tr("кроссфейд, мс"), a.config.crossfadeMs, b.config.crossfadeMs)
+        cmp(tr("частота выхода"), Int(a.config.outputRate), Int(b.config.outputRate))
         cmp("index", a.config.indexRatio, b.config.indexRatio)
-        cmp("тип отчёта", a.kind.rawValue, b.kind.rawValue)
-        cmp("источник", a.config.sourceFile ?? "-", b.config.sourceFile ?? "-")
+        cmp(tr("тип отчёта"), a.kind.rawValue, b.kind.rawValue)
+        cmp(tr("источник"), a.config.sourceFile ?? "-", b.config.sourceFile ?? "-")
         cmp("Mac", a.system.machine, b.system.machine)
         return d
     }
@@ -232,15 +232,15 @@ public enum ReportComparison {
             if s == .total { out.append(ComparisonRow(metric: "\(s.title) p99", a: da.p99, b: db.p99)) }
         }
         if let la = a.latency, let lb = b.latency, la.endToEnd.count > 0, lb.endToEnd.count > 0 {
-            out.append(ComparisonRow(metric: "Полная задержка p50", a: la.endToEnd.p50, b: lb.endToEnd.p50))
-            out.append(ComparisonRow(metric: "Полная задержка p95", a: la.endToEnd.p95, b: lb.endToEnd.p95))
-            out.append(ComparisonRow(metric: "Полная задержка p99", a: la.endToEnd.p99, b: lb.endToEnd.p99))
+            out.append(ComparisonRow(metric: tr("Полная задержка p50"), a: la.endToEnd.p50, b: lb.endToEnd.p50))
+            out.append(ComparisonRow(metric: tr("Полная задержка p95"), a: la.endToEnd.p95, b: lb.endToEnd.p95))
+            out.append(ComparisonRow(metric: tr("Полная задержка p99"), a: la.endToEnd.p99, b: lb.endToEnd.p99))
         }
         if let ca = a.coldStart, let cb = b.coldStart {
-            out.append(ComparisonRow(metric: "Загрузка моделей", a: ca.loadMs, b: cb.loadMs))
-            out.append(ComparisonRow(metric: "Первый блок", a: ca.firstBlockMs, b: cb.firstBlockMs))
+            out.append(ComparisonRow(metric: tr("Загрузка моделей"), a: ca.loadMs, b: cb.loadMs))
+            out.append(ComparisonRow(metric: tr("Первый блок"), a: ca.firstBlockMs, b: cb.firstBlockMs))
         }
-        out.append(ComparisonRow(metric: "Underrun (события)", a: Double(a.counters.underrunEvents), b: Double(b.counters.underrunEvents)))
+        out.append(ComparisonRow(metric: tr("Underrun (события)"), a: Double(a.counters.underrunEvents), b: Double(b.counters.underrunEvents)))
         return out
     }
 }

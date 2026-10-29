@@ -115,10 +115,29 @@ final class AppState: ObservableObject {
         didSet { defaults.set(anonymizeReports, forKey: "anonymizeReports") }
     }
 
+    // converter setup
+    @Published var setupRunning = false
+    @Published var setupProgress: Double?
+    @Published var setupPhase = ""
+
+    // interface language (system menus follow on next launch)
+    @Published var language: AppLanguage = AppLanguage(rawValue: UserDefaults.standard.string(forKey: Loc.defaultsKey) ?? "") ?? .system {
+        didSet {
+            defaults.set(language.rawValue, forKey: Loc.defaultsKey)
+            Loc.language = Loc.resolve(language)
+            switch language {
+            case .system: defaults.removeObject(forKey: "AppleLanguages")
+            case .ru: defaults.set(["ru"], forKey: "AppleLanguages")
+            case .en: defaults.set(["en"], forKey: "AppleLanguages")
+            }
+            if !running && !busy { status = tr("Остановлено") }
+        }
+    }
+
     // status
     @Published var running = false
     @Published var busy = false
-    @Published var status = "Остановлено"
+    @Published var status = tr("Остановлено")
     @Published var lastError: String?
     @Published var stats = EngineStats()
     @Published var resources = ResourceMonitor.Sample(cpuPercent: 0, memoryMB: 0, thermal: SystemProbe.thermalName())
@@ -244,21 +263,21 @@ final class AppState: ObservableObject {
     }
 
     func start() {
-        guard !benchRunning else { appendLog("Дождись окончания бенчмарка."); return }
-        guard let voice = currentVoice else { appendLog("Нет выбранного голоса — импортируй модель."); return }
-        guard let cfg = currentConfig else { appendLog("Для этих настроек задержки модель ещё не сконвертирована."); return }
+        guard !benchRunning else { appendLog(tr("Дождись окончания бенчмарка.")); return }
+        guard let voice = currentVoice else { appendLog(tr("Нет выбранного голоса — импортируй модель.")); return }
+        guard let cfg = currentConfig else { appendLog(tr("Для этих настроек задержки модель ещё не сконвертирована.")); return }
         guard let input = inputs.first(where: { $0.uid == inputUID }),
               let output = outputs.first(where: { $0.uid == outputUID }) else {
-            appendLog("Выбери устройства ввода и вывода."); return
+            appendLog(tr("Выбери устройства ввода и вывода.")); return
         }
         if input.uid == output.uid && AudioDevices.isVirtual(input.id) {
             // a virtual loopback device as both input and output feeds our output straight back in
-            appendLog("Вход и выход — одно виртуальное устройство (\(input.name)): звук пойдёт по кругу. Выбери физический микрофон.")
+            appendLog(trf("Вход и выход — одно виртуальное устройство (%@): звук пойдёт по кругу. Выбери физический микрофон.", "\(input.name)"))
             return
         }
         busy = true
         lastError = nil
-        status = "Загрузка моделей (первый раз Neural Engine компилирует их до минуты)…"
+        status = tr("Загрузка моделей (первый раз Neural Engine компилирует их до минуты)…")
         let units = compute.units
         let computeName = compute.rawValue
         Task.detached(priority: .userInitiated) {
@@ -266,8 +285,8 @@ final class AppState: ObservableObject {
             guard granted else {
                 await MainActor.run {
                     self.busy = false
-                    self.status = "Нет доступа к микрофону"
-                    self.appendLog("Разреши микрофон: Системные настройки → Конфиденциальность → Микрофон → RVCMac.")
+                    self.status = tr("Нет доступа к микрофону")
+                    self.appendLog(tr("Разреши микрофон: Системные настройки → Конфиденциальность → Микрофон → RVCMac."))
                 }
                 return
             }
@@ -276,13 +295,13 @@ final class AppState: ObservableObject {
                 let loaded = try LoadedVoice(voice: voice, config: cfg, units: units)
                 let engine = VoiceEngine(model: loaded)
                 let loadTime = Date().timeIntervalSince(t0)
-                await MainActor.run { self.status = "Прогрев моделей…" }
+                await MainActor.run { self.status = tr("Прогрев моделей…") }
                 let warmMs = try engine.prepare(outputRate: AudioDevices.sampleRate(output.id))
                 await MainActor.run {
                     engine.onStats = { s in Task { @MainActor in self.receive(s) } }
                     engine.onError = { msg in Task { @MainActor in self.fail(msg) } }
                     engine.onModelSwitched = { name, ms in
-                        Task { @MainActor in self.appendLog(String(format: "Голос переключён на %@ за %.0f мс (с ожиданием границы блока).", name, ms)) }
+                        Task { @MainActor in self.appendLog(String(format: tr("Голос переключён на %@ за %.0f мс (с ожиданием границы блока)."), name, ms)) }
                     }
                     engine.io.onDeviceEvent = { ev in Task { @MainActor in self.deviceEvent(ev) } }
                     self.engine = engine
@@ -297,23 +316,23 @@ final class AppState: ObservableObject {
                         self.monitor.reset()
                         self.chart.removeAll()
                         self.chartStart = Date()
-                        self.status = "Работает: \(voice.name) · \(input.name) → \(output.name)"
-                        self.appendLog(String(format: "Модели загружены за %.1f с (%@), прогрев %.0f мс. Устройства: вход %.1f мс, выход %.1f мс по данным Core Audio.",
+                        self.status = trf("Работает: %@ · %@ → %@", "\(voice.name)", "\(input.name)", "\(output.name)")
+                        self.appendLog(String(format: tr("Модели загружены за %.1f с (%@), прогрев %.0f мс. Устройства: вход %.1f мс, выход %.1f мс по данным Core Audio."),
                                               loadTime, computeName, warmMs, engine.io.inputLatencyMs, engine.io.outputLatencyMs))
                     } catch {
                         self.engine = nil
-                        self.status = "Ошибка запуска аудио"
+                        self.status = tr("Ошибка запуска аудио")
                         self.lastError = error.localizedDescription
-                        self.appendLog("Аудио: \(error.localizedDescription)")
+                        self.appendLog(trf("Аудио: %@", "\(error.localizedDescription)"))
                     }
                     self.busy = false
                 }
             } catch {
                 await MainActor.run {
                     self.busy = false
-                    self.status = "Ошибка загрузки модели"
+                    self.status = tr("Ошибка загрузки модели")
                     self.lastError = error.localizedDescription
-                    self.appendLog("Модель: \(error.localizedDescription)")
+                    self.appendLog(trf("Модель: %@", "\(error.localizedDescription)"))
                 }
             }
         }
@@ -328,7 +347,7 @@ final class AppState: ObservableObject {
         engine = nil
         running = false
         pttHeld = false
-        status = "Остановлено"
+        status = tr("Остановлено")
     }
 
     private func restart() {
@@ -340,16 +359,16 @@ final class AppState: ObservableObject {
         appendLog(msg)
         lastError = msg
         stop()
-        status = "Остановлено из-за ошибки"
+        status = tr("Остановлено из-за ошибки")
     }
 
     private func deviceEvent(_ ev: DeviceEvent) {
         switch ev {
         case let .disconnected(name):
-            fail("Устройство «\(name)» отключилось. Обработка остановлена.")
+            fail(trf("Устройство «%@» отключилось. Обработка остановлена.", "\(name)"))
             refreshDevices()
         case let .sampleRateChanged(name):
-            appendLog("У «\(name)» сменилась частота дискретизации — перезапускаю аудио.")
+            appendLog(trf("У «%@» сменилась частота дискретизации — перезапускаю аудио.", "\(name)"))
             restart()
         }
     }
@@ -372,19 +391,19 @@ final class AppState: ObservableObject {
     private func switchVoiceLive() {
         guard let engine, let voice = currentVoice else { return }
         guard let cfg = config(for: voice) else {
-            appendLog("У «\(voice.name)» нет сборки \(currentKey) — переключение на лету невозможно. Останови и нажми «Собрать».")
+            appendLog(trf("У «%@» нет сборки %@ — переключение на лету невозможно. Останови и нажми «Собрать».", "\(voice.name)", "\(currentKey)"))
             revertVoiceSelection(to: engine)
             return
         }
         let units = compute.units
-        appendLog("Готовлю голос \(voice.name)…")
+        appendLog(trf("Готовлю голос %@…", "\(voice.name)"))
         Task.detached(priority: .userInitiated) {
             do {
                 let loaded = try LoadedVoice(voice: voice, config: cfg, units: units)
                 try engine.switchModel(to: loaded)
             } catch {
                 await MainActor.run {
-                    self.appendLog("Переключение голоса: \(error.localizedDescription)")
+                    self.appendLog(trf("Переключение голоса: %@", "\(error.localizedDescription)"))
                     self.revertVoiceSelection(to: engine)
                 }
             }
@@ -434,7 +453,7 @@ final class AppState: ObservableObject {
     }
 
     private func persistProfiles() {
-        do { try profileStore.save(profiles) } catch { appendLog("Профили: \(error.localizedDescription)") }
+        do { try profileStore.save(profiles) } catch { appendLog(trf("Профили: %@", "\(error.localizedDescription)")) }
     }
 
     func applyProfile(_ p: Profile) {
@@ -445,7 +464,7 @@ final class AppState: ObservableObject {
         if voices.contains(where: { $0.name == p.voice }) {
             selectedVoice = p.voice
         } else {
-            appendLog("В профиле «\(p.name)» голос \(p.voice), но его нет в библиотеке.")
+            appendLog(trf("В профиле «%@» голос %@, но его нет в библиотеке.", "\(p.name)", "\(p.voice)"))
         }
         blockMs = p.blockMs
         extraMs = p.extraMs
@@ -460,7 +479,7 @@ final class AppState: ObservableObject {
         activeProfileID = p.id
         if running {
             if needsRestart {
-                appendLog("Профиль «\(p.name)» меняет задержку или вычисления — перезапуск.")
+                appendLog(trf("Профиль «%@» меняет задержку или вычисления — перезапуск.", "\(p.name)"))
                 restart()
             } else if voiceChanged {
                 switchVoiceLive()
@@ -494,7 +513,7 @@ final class AppState: ObservableObject {
     private func registerHotkeys() {
         hotkeyFailures = HotkeyManager.shared.register(hotkeys)
         if !hotkeyFailures.isEmpty {
-            appendLog("Не удалось назначить: " + hotkeyFailures.map(\.title).joined(separator: ", ") + " (сочетание занято).")
+            appendLog(tr("Не удалось назначить: ") + hotkeyFailures.map(\.title).joined(separator: ", ") + tr(" (сочетание занято)."))
         }
     }
 
@@ -540,10 +559,10 @@ final class AppState: ObservableObject {
         var counters = engine.counters(rows: rows)
         counters.errors = lastError == nil ? 0 : 1
         var notes = [
-            "Полная задержка = конвейер (захват последнего сэмпла блока → воспроизведение первого сэмпла результата) + алгоритмическая (блок + кроссфейд + SOLA − смещение) + задержки устройств по данным Core Audio.",
-            "Задержка ресемплера AVAudioConverter (единицы мс) не учитывается.",
+            tr("Полная задержка = конвейер (захват последнего сэмпла блока → воспроизведение первого сэмпла результата) + алгоритмическая (блок + кроссфейд + SOLA − смещение) + задержки устройств по данным Core Audio."),
+            tr("Задержка ресемплера AVAudioConverter (единицы мс) не учитывается."),
         ]
-        if counters.modelSwitches > 0 { notes.append("Голос переключался во время сессии: \(counters.modelSwitches) раз.") }
+        if counters.modelSwitches > 0 { notes.append(trf("Голос переключался во время сессии: %@ раз.", "\(counters.modelSwitches)")) }
         let report = Report(kind: .live, createdAt: Date(), appVersion: SystemProbe.appVersion,
                             system: SystemProbe.info(thermalStart: monitor.samples.first?.thermal ?? SystemProbe.thermalName()),
                             model: Report.ModelInfo(name: model.voice.name, version: model.voice.version, sampleRate: model.voice.sr,
@@ -557,12 +576,12 @@ final class AppState: ObservableObject {
     }
 
     private func summaryLine(_ r: Report) -> String {
-        var s = "Сессия: \(r.counters.blocks) блоков"
+        var s = trf("Сессия: %@ блоков", "\(r.counters.blocks)")
         if let l = r.latency, l.endToEnd.count > 0 {
-            s += String(format: ", задержка p50 %.0f / p95 %.0f / p99 %.0f мс", l.endToEnd.p50, l.endToEnd.p95, l.endToEnd.p99)
+            s += String(format: tr(", задержка p50 %.0f / p95 %.0f / p99 %.0f мс"), l.endToEnd.p50, l.endToEnd.p95, l.endToEnd.p99)
         }
         if let t = r.stages[Stage.total.key], t.count > 0 {
-            s += String(format: ", обработка блока p95 %.0f мс", t.p95)
+            s += String(format: tr(", обработка блока p95 %.0f мс"), t.p95)
         }
         s += ", underrun \(r.counters.underrunEvents)."
         return s
@@ -572,17 +591,17 @@ final class AppState: ObservableObject {
 
     func exportSessionReport() {
         let snapshot = engine.map { makeLiveReport($0) } ?? lastSession
-        guard let snapshot else { appendLog("Нет данных сессии — запусти обработку."); return }
+        guard let snapshot else { appendLog(tr("Нет данных сессии — запусти обработку.")); return }
         Task.detached(priority: .utility) {
             do {
                 let url = try ReportStore.save(snapshot.report, rows: snapshot.rows)
                 await MainActor.run {
                     self.lastReport = snapshot.report
                     self.reportFiles = ReportStore.list()
-                    self.appendLog("Отчёт сохранён: \(url.path) (+ .csv)")
+                    self.appendLog(trf("Отчёт сохранён: %@ (+ .csv)", "\(url.path)"))
                 }
             } catch {
-                await MainActor.run { self.appendLog("Отчёт: \(error.localizedDescription)") }
+                await MainActor.run { self.appendLog(trf("Отчёт: %@", "\(error.localizedDescription)")) }
             }
         }
     }
@@ -590,13 +609,13 @@ final class AppState: ObservableObject {
     func chooseBenchmarkFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
-        panel.message = "Аудиофайл для бенчмарка (wav, aiff, m4a, mp3…)"
+        panel.message = tr("Аудиофайл для бенчмарка (wav, aiff, m4a, mp3…)")
         if panel.runModal() == .OK { benchFile = panel.url }
     }
 
     func runBenchmark() {
-        guard !running else { appendLog("Останови обработку: бенчмарк и live-режим делят Neural Engine."); return }
-        guard let voice = currentVoice, let cfg = currentConfig else { appendLog("Выбери голос с собранной конфигурацией."); return }
+        guard !running else { appendLog(tr("Останови обработку: бенчмарк и live-режим делят Neural Engine.")); return }
+        guard let voice = currentVoice, let cfg = currentConfig else { appendLog(tr("Выбери голос с собранной конфигурацией.")); return }
         var options = BenchmarkOptions()
         options.sourceURL = benchFile
         options.runs = max(1, benchRuns)
@@ -607,8 +626,8 @@ final class AppState: ObservableObject {
         let cancel = benchCancel
         cancel.value = 0
         benchRunning = true
-        benchProgress = "Старт…"
-        appendLog("Бенчмарк: \(voice.name), \(cfg.key), \(compute.rawValue), прогонов \(options.runs), \(benchFile?.lastPathComponent ?? "синтетический сигнал").")
+        benchProgress = tr("Старт…")
+        appendLog(trf("Бенчмарк: %@, %@, %@, прогонов %@, %@.", "\(voice.name)", "\(cfg.key)", "\(compute.rawValue)", "\(options.runs)", benchFile?.lastPathComponent ?? tr("синтетический сигнал")))
         Task.detached(priority: .userInitiated) {
             do {
                 let result = try BenchmarkRunner.run(voice: voice, config: cfg, compute: compute, params: params, options: options,
@@ -618,17 +637,17 @@ final class AppState: ObservableObject {
                                                audio: options.saveOutput ? result.output : nil, sampleRate: options.outputRate)
                 await MainActor.run {
                     self.benchRunning = false
-                    self.benchProgress = "Готово"
+                    self.benchProgress = tr("Готово")
                     self.lastReport = result.report
                     self.reportFiles = ReportStore.list()
                     self.appendLog(self.benchmarkLine(result.report))
-                    self.appendLog("Отчёт: \(url.path)")
+                    self.appendLog(trf("Отчёт: %@", "\(url.path)"))
                 }
             } catch {
                 await MainActor.run {
                     self.benchRunning = false
                     self.benchProgress = error.localizedDescription
-                    self.appendLog("Бенчмарк: \(error.localizedDescription)")
+                    self.appendLog(trf("Бенчмарк: %@", "\(error.localizedDescription)"))
                 }
             }
         }
@@ -637,10 +656,10 @@ final class AppState: ObservableObject {
     func cancelBenchmark() { benchCancel.value = 1 }
 
     private func benchmarkLine(_ r: Report) -> String {
-        var s = "Бенчмарк готов"
-        if let c = r.coldStart { s += String(format: ": загрузка %.0f мс, первый блок %.0f мс", c.loadMs, c.firstBlockMs) }
+        var s = tr("Бенчмарк готов")
+        if let c = r.coldStart { s += String(format: tr(": загрузка %.0f мс, первый блок %.0f мс"), c.loadMs, c.firstBlockMs) }
         if let t = r.stages[Stage.total.key] {
-            s += String(format: "; блок p50 %.1f / p95 %.1f / p99 %.1f мс", t.p50, t.p95, t.p99)
+            s += String(format: tr("; блок p50 %.1f / p95 %.1f / p99 %.1f мс"), t.p50, t.p95, t.p99)
         }
         let rtf = r.runs.map(\.realTimeFactor)
         if !rtf.isEmpty { s += String(format: "; RTF %.2f", rtf.reduce(0, +) / Double(rtf.count)) }
@@ -661,10 +680,10 @@ final class AppState: ObservableObject {
         panel.allowedContentTypes = []
         panel.allowsOtherFileTypes = true
         panel.canChooseDirectories = false
-        panel.message = "Выбери RVC-модель (.pth или .safetensors)"
+        panel.message = tr("Выбери RVC-модель (.pth или .safetensors)")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let ext = url.pathExtension.lowercased()
-        guard ext == "pth" || ext == "safetensors" else { appendLog("Нужен файл .pth или .safetensors"); return }
+        guard ext == "pth" || ext == "safetensors" else { appendLog(tr("Нужен файл .pth или .safetensors")); return }
         runConverter(["import", "--model", url.path] + latencyArgs())
     }
 
@@ -673,9 +692,9 @@ final class AppState: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = []
         panel.allowsOtherFileTypes = true
-        panel.message = "Выбери .index для голоса \(v.name) (added_*.index)"
+        panel.message = trf("Выбери .index для голоса %@ (added_*.index)", "\(v.name)")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard url.pathExtension.lowercased() == "index" else { appendLog("Нужен файл .index"); return }
+        guard url.pathExtension.lowercased() == "index" else { appendLog(tr("Нужен файл .index")); return }
         runConverter(["index", "--name", v.name, "--index", url.path])
     }
 
@@ -688,20 +707,82 @@ final class AppState: ObservableObject {
         ["--block-ms", "\(blockMs)", "--extra-ms", "\(extraMs)", "--crossfade-ms", "\(crossfadeMs)"]
     }
 
+    // MARK: converter environment (installed on first use)
+
+    var converterReady: Bool { ConverterSetup.isReady }
+
+    /// Runs `then` once the converter environment exists, installing it first (after asking) if needed.
+    private func ensureConverter(then: @escaping () -> Void) {
+        if converterReady { then(); return }
+        guard !setupRunning else { return }
+        let alert = NSAlert()
+        alert.messageText = tr("Нужен конвертер моделей")
+        alert.informativeText = tr("Чтобы превращать RVC-модели в формат Core ML, RVCMac один раз скачает Python и библиотеки (около 1 ГБ, ещё ~400 МБ весов при первой конвертации). Всё хранится в папке приложения, звук никуда не отправляется.")
+        alert.addButton(withTitle: tr("Скачать и установить"))
+        alert.addButton(withTitle: tr("Отмена"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        installConverter(then: then)
+    }
+
+    func installConverter(then: (() -> Void)? = nil) {
+        guard !setupRunning else { return }
+        if running { stop() }
+        setupRunning = true
+        busy = true
+        setupProgress = 0
+        setupPhase = tr("Подготовка…")
+        appendLog(trf("Установка конвертера в %@", ConverterSetup.venvDir.path))
+        Task.detached(priority: .userInitiated) {
+            do {
+                try await ConverterSetup.install(
+                    progress: { pr in Task { @MainActor in self.setupPhase = pr.phase; self.setupProgress = pr.fraction } },
+                    log: { line in Task { @MainActor in self.appendLog(line) } })
+                await MainActor.run {
+                    self.setupRunning = false
+                    self.busy = false
+                    self.status = tr("Конвертер готов")
+                    self.appendLog(tr("Конвертер установлен."))
+                    then?()
+                }
+            } catch {
+                await MainActor.run {
+                    self.setupRunning = false
+                    self.busy = false
+                    self.status = tr("Установка конвертера не удалась")
+                    self.lastError = error.localizedDescription
+                    self.appendLog(trf("Установка конвертера: %@", error.localizedDescription))
+                }
+            }
+        }
+    }
+
+    func reinstallConverter() {
+        guard !setupRunning, !busy else { return }
+        do { try ConverterSetup.remove() } catch { appendLog(trf("Не удалось удалить старое окружение: %@", error.localizedDescription)) }
+        installConverter()
+    }
+
+    func revealDataFolder() {
+        NSWorkspace.shared.activateFileViewerSelecting([RVCMacPaths.home])
+    }
+
     private func runConverter(_ args: [String]) {
-        guard FileManager.default.isExecutableFile(atPath: RVCMacPaths.python.path) else {
-            appendLog("Не найден Python конвертера: \(RVCMacPaths.python.path). Запусти scripts/setup_converter.sh.")
+        guard converterReady else {
+            ensureConverter { [weak self] in self?.runConverter(args) }
             return
         }
         if running { stop() }
         busy = true
-        status = "Конвертация модели…"
+        status = tr("Конвертация модели…")
         appendLog("$ convert.py " + args.joined(separator: " "))
         let p = Process()
         p.executableURL = RVCMacPaths.python
         p.arguments = [RVCMacPaths.converter.path] + args
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
+        // keep models, caches and downloaded weights in the app's data folder (easy to find and delete)
+        env["RVCMAC_HOME"] = RVCMacPaths.home.path
+        env["HF_HOME"] = RVCMacPaths.home.appendingPathComponent("cache/huggingface").path
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe
@@ -717,9 +798,9 @@ final class AppState: ObservableObject {
                 self.busy = false
                 self.converter = nil
                 if proc.terminationStatus == 0 {
-                    self.status = "Конвертация завершена"
+                    self.status = tr("Конвертация завершена")
                 } else {
-                    self.status = "Конвертация упала (код \(proc.terminationStatus)) — см. лог"
+                    self.status = trf("Конвертация упала (код %@) — см. лог", "\(proc.terminationStatus)")
                     if self.log.suffix(3000).contains("--unsafe-pickle"), !args.contains("--unsafe-pickle") {
                         self.offerUnsafeRetry(args)
                     }
@@ -732,18 +813,18 @@ final class AppState: ObservableObject {
             converter = p
         } catch {
             busy = false
-            appendLog("Не удалось запустить конвертер: \(error.localizedDescription)")
+            appendLog(trf("Не удалось запустить конвертер: %@", "\(error.localizedDescription)"))
         }
     }
 
     /// A .pth that is not plain weights is only loaded after an explicit confirmation.
     private func offerUnsafeRetry(_ args: [String]) {
         let alert = NSAlert()
-        alert.messageText = "Модель не прошла безопасную загрузку"
-        alert.informativeText = "Файл .pth содержит не только веса. Полная загрузка pickle может выполнить код из файла. Продолжай, только если доверяешь источнику модели. Лучше найти версию .safetensors."
+        alert.messageText = tr("Модель не прошла безопасную загрузку")
+        alert.informativeText = tr("Файл .pth содержит не только веса. Полная загрузка pickle может выполнить код из файла. Продолжай, только если доверяешь источнику модели. Лучше найти версию .safetensors.")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Отмена")
-        alert.addButton(withTitle: "Доверяю, загрузить")
+        alert.addButton(withTitle: tr("Отмена"))
+        alert.addButton(withTitle: tr("Доверяю, загрузить"))
         if alert.runModal() == .alertSecondButtonReturn {
             runConverter(args + ["--unsafe-pickle"])
         }

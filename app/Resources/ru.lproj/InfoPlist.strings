@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "RVCMac преобразует голос с микрофона в реальном времени, локально на этом Mac.";
+"CFBundleDisplayName" = "RVCMac";

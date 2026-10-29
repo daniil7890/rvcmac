@@ -19,11 +19,18 @@ jobs:
         working-directory: app
         run: swift build -c release --arch arm64 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
 
-      - name: Warnings
+      - name: Compiler diagnostics as annotations
         if: always()
         working-directory: app
-        run: grep -E "warning:" build.log | sort -u | head -50 || true
+        run: |
+          python3 ../scripts/ci_annotate.py build.log error ": error:" "swift errors"
+          python3 ../scripts/ci_annotate.py build.log warning ": warning:" "swift warnings"
 
       - name: Unit tests
         working-directory: app
-        run: swift test
+        run: swift test 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+
+      - name: Test failures as annotation
+        if: failure()
+        working-directory: app
+        run: python3 ../scripts/ci_annotate.py test.log error "error|failed" "tests"

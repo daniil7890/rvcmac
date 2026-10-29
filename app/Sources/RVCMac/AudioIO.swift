@@ -146,6 +146,9 @@ final class AudioIO {
         inputClock.reset()
         outputClock.reset()
         outputStarted.value = 0
+        // silent until the engine sets real values for this session (it needs the device rate first)
+        outputPrefill.value = Int.max
+        outputMaxFill.value = Int.max
         for c in [underrunEvents, underrunFrames, trimFrames, trimEvents, overloads, truncatedCallbacks] { c.value = 0 }
 
         // Captured as plain references: no `self` lookups (weak or strong) inside the callbacks.
@@ -185,9 +188,10 @@ final class AudioIO {
             var got = 0
             if started.value == 0 && outRing.available >= prefill.value { started.value = 1 }
             if started.value != 0 {
-                let excess = outRing.available - frames - maxFill.value
-                if excess > 0 {
-                    tFrames.add(outRing.skip(excess))
+                // written so it cannot overflow when the limit is Int.max
+                let queued = outRing.available, limit = maxFill.value
+                if queued > frames && queued - frames > limit {
+                    tFrames.add(outRing.skip(queued - frames - limit))
                     tEvents.add(1)
                 }
                 let ts = inOutputTime.pointee

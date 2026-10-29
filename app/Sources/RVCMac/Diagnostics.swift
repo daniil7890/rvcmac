@@ -266,7 +266,6 @@ enum BenchmarkRunner {
             pipeline.reset()
             let runStart = HostTime.now()
             var totalMs = 0.0
-            var rowsThisRun: [Int] = []
             for b in 0..<nBlocks {
                 if isCancelled() { throw BenchmarkError.cancelled }
                 if options.realtimePacing {
@@ -283,7 +282,6 @@ enum BenchmarkRunner {
                 let id = recorder.append(run: r, t: Double(b) * blockSec, flags: res.flags, stages: times, algorithmicMs: alg, solaOffset: pipeline.lastOffset)
                 // offline: "pipeline" is the processing time; no devices or queues
                 recorder.setLatency(id: id, pipelineMs: times[.total], endToEndMs: times[.total] + alg)
-                rowsThisRun.append(id)
                 if r == 1 && options.saveOutput {
                     output.append(contentsOf: pipeline.out[0..<pipeline.outCount])
                 }

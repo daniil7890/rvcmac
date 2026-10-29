@@ -54,10 +54,25 @@ The app interface is in Russian; the original labels are given in parentheses.
 
 - **Import… (Импорт…)** — pick a `.pth` or `.safetensors` file. A `.index` in the same folder is picked up automatically. The **Index…** button attaches an index manually.
 - **Latency (Задержка)** — Block (Блок), Context (Контекст) and Crossfade (Кроссфейд). Each combination is built once with the **Build (Собрать)** button.
-  - Latency ≈ block + processing time.
-  - The line at the bottom shows the processing time per block. You can lower the block size while it stays green.
+  - Total latency ≈ block + crossfade + 10 ms SOLA + processing + output queue + device latency. The measured value is shown in the bottom line and in the Diagnostics window.
+  - The line at the bottom shows the processing time per block. You can lower the block size while it stays green and the underrun counter does not grow.
 - **Sound (Звук)** — pitch, silence threshold, volume, Index and Protect. Everything changes on the fly.
-- **Bypass (Без обработки)** — passes audio straight through so you can check the routing.
+- **Bypass (Без обработки)** — passes audio straight through so you can check the routing. **Mute** and **Push-to-talk** silence the output with a short ramp, without clicks.
+- **Profiles (Профиль)** — voice, latency, compute units and sound parameters under one name. Between voices with the same latency settings the switch happens without stopping: the new voice is prepared in the background and crossfaded in.
+- **Hotkeys** (Settings, ⌘,) work globally: start/stop ⌥⌘R, mute ⌥⌘M, bypass ⌥⌘B. Push-to-talk and "next profile" can be assigned there too.
+- **Menu bar** — status, mute, bypass and profiles. The app can stay in the menu bar after the window is closed.
+
+### Diagnostics and benchmark
+
+The Diagnostics window (Диагностика, button at the bottom of the main window):
+
+- **Live** — total latency (p50/p95/p99) split into capture-to-playback pipeline, algorithmic part and device latency. Also per-stage timings (ContentVec, FCPE, index, NSF, synthesizer, SOLA), underruns and overflows, CPU, memory and thermal state. "Save session report" writes JSON + CSV to `reports/`.
+- **Benchmark** — a repeatable test on an audio file or a built-in synthetic signal. Cold start is measured separately, then warm-up and several real-time-paced runs. The first run's output can be saved as WAV for listening.
+- **Compare** — two reports side by side with deltas. The window warns when their configurations differ.
+
+See [docs/AUDIT.md](docs/AUDIT.md) (Russian) for the audio path audit and how to take a baseline.
+
+A `.pth` file is a pickle and can execute code when loaded. The converter therefore opens models in safe mode by default (`weights_only=True`). If a file holds more than plain weights, the app asks whether you trust its source. From the Terminal the same is done with `--unsafe-pickle`. Prefer `.safetensors` when available.
 
 From the Terminal:
 

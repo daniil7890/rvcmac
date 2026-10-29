@@ -370,7 +370,8 @@ final class AppState: ObservableObject {
     private func switchVoiceLive() {
         guard let engine, let voice = currentVoice else { return }
         guard let cfg = config(for: voice) else {
-            appendLog("У «\(voice.name)» нет сборки \(currentKey) — переключение на лету невозможно, нажми «Собрать».")
+            appendLog("У «\(voice.name)» нет сборки \(currentKey) — переключение на лету невозможно. Останови и нажми «Собрать».")
+            revertVoiceSelection(to: engine)
             return
         }
         let units = compute.units
@@ -380,9 +381,19 @@ final class AppState: ObservableObject {
                 let loaded = try LoadedVoice(voice: voice, config: cfg, units: units)
                 try engine.switchModel(to: loaded)
             } catch {
-                await MainActor.run { self.appendLog("Переключение голоса: \(error.localizedDescription)") }
+                await MainActor.run {
+                    self.appendLog("Переключение голоса: \(error.localizedDescription)")
+                    self.revertVoiceSelection(to: engine)
+                }
             }
         }
+    }
+
+    /// Keeps the picker in sync with what is actually playing after a failed switch.
+    private func revertVoiceSelection(to engine: VoiceEngine) {
+        applyingProfile = true
+        selectedVoice = engine.currentModel.voice.name
+        applyingProfile = false
     }
 
     // MARK: profiles

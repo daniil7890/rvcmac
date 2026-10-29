@@ -1,3 +1,4 @@
+import CoreAudio
 import CoreML
 import Foundation
 import os

@@ -30,6 +30,15 @@ jobs:
         working-directory: app
         run: swift test 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
 
+      - name: Test summary
+        if: success()
+        working-directory: app
+        run: python3 ../scripts/ci_annotate.py test.log notice "Executed [0-9]+ tests" "tests"
+
+      - name: Assemble RVCMac.app
+        if: success()
+        run: bash scripts/build_app.sh
+
       - name: Test failures as annotation
         if: failure()
         working-directory: app

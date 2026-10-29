@@ -21,3 +21,7 @@ RVCMac.app/
 *.log
 .DS_Store
 dist/
+
+# User data next to a local build
+reports/
+profiles.json

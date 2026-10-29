@@ -85,6 +85,38 @@ enum ModelLibrary {
         RVCMacPaths.models.appendingPathComponent("voices").appendingPathComponent(v.name)
     }
 
+    /// Problems that would make a voice fail to load, in plain words (empty = looks fine).
+    /// Only checks files and sizes; nothing from the model is executed.
+    static func validate(_ v: VoiceInfo) -> [String] {
+        let fm = FileManager.default
+        var issues: [String] = []
+        let dir = voiceDir(v)
+        if v.configs.isEmpty { issues.append("нет собранных настроек задержки") }
+        var sharedChecked = Set<String>()
+        for cfg in v.configs.values.sorted(by: { $0.key < $1.key }) {
+            if !fm.fileExists(atPath: dir.appendingPathComponent(cfg.synth).path) {
+                issues.append("\(cfg.key): нет \(cfg.synth)")
+            }
+            if sharedChecked.insert(cfg.shared).inserted {
+                let shared = RVCMacPaths.models.appendingPathComponent(cfg.shared)
+                for f in ["embedder.mlpackage", "fcpe.mlpackage", "fcpe.json"] where !fm.fileExists(atPath: shared.appendingPathComponent(f).path) {
+                    issues.append("\(cfg.key): нет общей модели \(cfg.shared)/\(f)")
+                }
+            }
+        }
+        if let idx = v.index {
+            let url = dir.appendingPathComponent(idx.file)
+            let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int
+            if size == nil {
+                issues.append("нет файла индекса \(idx.file)")
+            } else if size != idx.count * idx.dim * 4 {
+                issues.append("размер \(idx.file) не совпадает с voice.json")
+            }
+        }
+        if ![256, 768].contains(v.embChannels) { issues.append("неожиданная размерность признаков \(v.embChannels)") }
+        return issues
+    }
+
     /// Compiles an .mlpackage once and caches the .mlmodelc next to it.
     static func compiled(_ package: URL) throws -> URL {
         let fm = FileManager.default

@@ -65,6 +65,42 @@ enum AudioDevices {
         return list.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
+    static func uint32(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
+                       _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> UInt32? {
+        var addr = address(selector, scope)
+        var v: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectHasProperty(id, &addr),
+              AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &v) == noErr else { return nil }
+        return v
+    }
+
+    /// Virtual devices (BlackHole, Loopback, aggregate-free drivers) can route output back to input.
+    static func isVirtual(_ id: AudioObjectID) -> Bool {
+        uint32(id, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeVirtual
+    }
+
+    static func isAlive(_ id: AudioObjectID) -> Bool { (uint32(id, kAudioDevicePropertyDeviceIsAlive) ?? 0) != 0 }
+
+    static func bufferFrameSize(_ id: AudioObjectID) -> Int { Int(uint32(id, kAudioDevicePropertyBufferFrameSize) ?? 0) }
+
+    /// Device latency + safety offset + latency of the first stream, in frames, as Core Audio reports them.
+    /// The IO buffer itself is not included: the engine measures that part directly from timestamps.
+    static func latencyFrames(_ id: AudioObjectID, input: Bool) -> Int {
+        let scope = input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput
+        var total = Int(uint32(id, kAudioDevicePropertyLatency, scope) ?? 0)
+        total += Int(uint32(id, kAudioDevicePropertySafetyOffset, scope) ?? 0)
+        var addr = address(kAudioDevicePropertyStreams, scope)
+        var size: UInt32 = 0
+        if AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size >= UInt32(MemoryLayout<AudioStreamID>.size) {
+            var streams = [AudioStreamID](repeating: 0, count: Int(size) / MemoryLayout<AudioStreamID>.size)
+            if AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &streams) == noErr, let s = streams.first {
+                total += Int(uint32(s, kAudioStreamPropertyLatency) ?? 0)
+            }
+        }
+        return total
+    }
+
     static func sampleRate(_ id: AudioObjectID) -> Double {
         var addr = address(kAudioDevicePropertyNominalSampleRate)
         var rate: Float64 = 0

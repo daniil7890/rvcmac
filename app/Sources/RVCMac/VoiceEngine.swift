@@ -1,96 +1,70 @@
-import Accelerate
 import CoreAudio
 import CoreML
 import Foundation
 import os
+import RVCMacCore
 
-struct EngineParams {
-    var pitch: Int = 0          // semitones
-    var gateDB: Float = -60     // input gate threshold
-    var gain: Float = 1.0       // output gain
-    var bypass = false          // pass input straight through (for checking routing)
-    var indexRatio: Float = 0.5 // how much retrieved index features replace the input features
-    var protect: Float = 0.33   // keep original features on unvoiced frames (0.5 = off)
-}
-
+/// What the UI shows while running. Distributions cover a recent window (last 64 blocks).
 struct EngineStats {
-    var processMs: Double = 0
+    var processMs: Double = 0           // slowest block in the last report period
     var blockMs: Double = 0
     var inputDB: Float = -120
-    var underruns = 0
     var gated = false
+    var stageP50 = [Double](repeating: 0, count: Stage.allCases.count)
+    var stageP95 = [Double](repeating: 0, count: Stage.allCases.count)
+    var pipeline = Distribution.empty
+    var endToEnd = Distribution.empty
+    var algorithmicMs: Double = 0
+    var deviceInputMs: Double = 0
+    var deviceOutputMs: Double = 0
+    var outputQueueMs: Double = 0
+    var counters = Report.Counters()
+    var overloads = 0
+    var inputBufferFrames = 0
+    var outputBufferFrames = 0
 }
 
-/// Fast gaussian noise (xorshift + Box-Muller).
-struct Gaussian {
-    private var state: UInt64 = 0x9E3779B97F4A7C15
-    private var spare: Float?
-    mutating func next() -> Float {
-        if let s = spare { spare = nil; return s }
-        var u1: Float = 0
-        repeat { u1 = uniform() } while u1 <= 1e-7
-        let u2 = uniform()
-        let r = sqrtf(-2 * logf(u1))
-        let t = 2 * Float.pi * u2
-        spare = r * sinf(t)
-        return r * cosf(t)
+/// Fixed-size ring of recent values for cheap rolling percentiles on the worker thread.
+private struct RecentWindow {
+    private var values: [Double]
+    private var next = 0
+    private(set) var count = 0
+    init(size: Int) { values = [Double](repeating: 0, count: size) }
+    mutating func add(_ v: Double) {
+        guard v.isFinite else { return }
+        values[next] = v
+        next = (next + 1) % values.count
+        count = min(count + 1, values.count)
     }
-    private mutating func uniform() -> Float {
-        state ^= state << 13; state ^= state >> 7; state ^= state << 17
-        return Float(state >> 40) / Float(1 << 24)
-    }
+    var distribution: Distribution { Distribution.of(values[0..<count]) }
 }
 
+/// Live engine: Core Audio I/O + a worker thread that runs `VoicePipeline` block by block and measures it.
 final class VoiceEngine {
-    private let io = AudioIO()
-    private let model: LoadedVoice
+    let io = AudioIO()
+    private let modelLock = OSAllocatedUnfairLock()
+    private var activeModel: LoadedVoice
     private var thread: Thread?
+    private var threadActive = false
+    private let finished = DispatchSemaphore(value: 0)
     private let running = OSAllocatedUnfairLock(initialState: false)
     private let paramsLock = OSAllocatedUnfairLock(initialState: EngineParams())
+    private let swapLock = OSAllocatedUnfairLock(uncheckedState: (ModelState, UInt64)?.none)
+
+    private let recorderLock = OSAllocatedUnfairLock()
+    private let recorder = BlockRecorder(capacity: 40_000)   // ~100 min at 150 ms blocks
+    private let outputOverflow = AtomicInt(0)
+    private let skipped16 = AtomicInt(0)
+    private let modelSwitches = AtomicInt(0)
+    private(set) var sessionStarted = Date()
+
+    /// Worker thread callbacks; the receiver hops to the main actor itself.
     var onStats: ((EngineStats) -> Void)?
     var onError: ((String) -> Void)?
+    var onModelSwitched: ((String, Double) -> Void)?
 
-    // sizes
-    private let cfg: LatencyConfig
-    private let block16: Int
-    private let window: Int        // N
-    private var outRate = 48000.0
-    private var blockOut = 0, cfOut = 0, searchOut = 0, segOut = 0
-
-    // buffers
-    private var win: [Float]
-    private var acc16: [Float] = []
-    private var solaBuffer: [Float] = []
-    private var fadeIn: [Float] = []
-    private var fadeOut: [Float] = []
-    private var rng = Gaussian()
-    private var centTable: [Float] = []
-
-    // Core ML inputs (reused)
-    private let audioArray: MLMultiArray
-    private let pitchArray: MLMultiArray
-    private let noiseArray: MLMultiArray
-    private let sineArray: MLMultiArray
-    private let phoneArray: MLMultiArray
-
-    private var inResampler: Resampler?
-    private var outResampler: Resampler?
-    private var bypassResampler: Resampler?
-
-    init(model: LoadedVoice) throws {
-        self.model = model
-        cfg = model.config
-        block16 = cfg.blockF * 160
-        window = cfg.N
-        win = [Float](repeating: 0, count: cfg.N)
-        audioArray = try MLMultiArray(shape: [1, NSNumber(value: cfg.N)], dataType: .float32)
-        pitchArray = try MLMultiArray(shape: [1, NSNumber(value: cfg.F)], dataType: .int32)
-        noiseArray = try MLMultiArray(shape: [1, NSNumber(value: model.interChannels), NSNumber(value: cfg.F - cfg.flowHead)], dataType: .float32)
-        sineArray = try MLMultiArray(shape: [1, NSNumber(value: cfg.R * model.upp), 1], dataType: .float32)
-        phoneArray = try MLMultiArray(shape: [1, NSNumber(value: cfg.F), NSNumber(value: model.voice.embChannels)], dataType: .float32)
-        let m = model.fcpe
-        let c0 = 1200 * log2(m.f0Min / 10), c1 = 1200 * log2(m.f0Max / 10)
-        centTable = (0..<m.outDims).map { Float(c0 + (c1 - c0) * Double($0) / Double(m.outDims - 1)) }
+    init(model: LoadedVoice) {
+        activeModel = model
     }
 
     var params: EngineParams {
@@ -98,334 +72,308 @@ final class VoiceEngine {
         set { paramsLock.withLock { $0 = newValue } }
     }
 
-    func start(input: AudioDeviceID, output: AudioDeviceID) throws {
-        try io.start(input: input, output: output)
-        outRate = io.outputRate
-        let perFrame = Int(outRate) / 100
-        blockOut = cfg.blockF * perFrame
-        cfOut = cfg.crossfadeF * perFrame
-        searchOut = cfg.solaF * perFrame
-        segOut = cfg.R * perFrame
-        io.outputPrefill = blockOut / 2
-        solaBuffer = [Float](repeating: 0, count: cfOut)
-        fadeIn = (0..<cfOut).map { i in
-            let t = cfOut > 1 ? Float(i) / Float(cfOut - 1) : 1
-            let s = sinf(0.5 * .pi * t)
-            return s * s
+    var muted: Bool {
+        get { io.muted.value != 0 }
+        set { io.muted.value = newValue ? 1 : 0 }
+    }
+
+    var currentModel: LoadedVoice { modelLock.withLockUnchecked { activeModel } }
+
+    private var isRunning: Bool { running.withLock { $0 } }
+
+    private var prepared: VoicePipeline?
+
+    /// Builds the pipeline and runs a few inferences on silence before audio starts (call off the main thread).
+    /// Without this the first, slow (cold Neural Engine) blocks let input pile up; the backlog then sits in the
+    /// output queue as permanent extra latency. Returns the warm-up time in ms.
+    @discardableResult
+    func prepare(outputRate: Double, blocks: Int = 3) throws -> Double {
+        let t0 = HostTime.now()
+        let pipeline = try VoicePipeline(model: currentModel, outRate: outputRate)
+        var p = params
+        p.gateDB = -200
+        p.bypass = false
+        var times = StageTimes()
+        let silence = [Float](repeating: 0, count: pipeline.block16)
+        for _ in 0..<blocks {
+            _ = try silence.withUnsafeBufferPointer { try pipeline.process($0, params: p, times: &times) }
         }
-        fadeOut = fadeIn.map { 1 - $0 }
-        inResampler = Resampler(from: io.inputRate, to: 16000)
-        outResampler = Resampler(from: Double(model.voice.sr), to: outRate)
-        bypassResampler = Resampler(from: 16000, to: outRate)
-        win = [Float](repeating: 0, count: window)
-        acc16 = []
+        pipeline.reset()
+        prepared = pipeline
+        return HostTime.ms(from: t0, to: HostTime.now())
+    }
+
+    func start(input: AudioDeviceID, output: AudioDeviceID) throws {
+        stop()
+        try io.start(input: input, output: output)
+        let pipeline: VoicePipeline
+        do {
+            if let p = prepared, p.outRate == io.outputRate, p.state.model === currentModel {
+                pipeline = p
+            } else {
+                pipeline = try VoicePipeline(model: currentModel, outRate: io.outputRate)
+            }
+            prepared = nil
+        } catch {
+            io.stop()
+            throw error
+        }
+        io.outputPrefill.value = pipeline.blockOut / 2
+        // Right after a block is written the queue holds that block plus the leftover of the previous ones.
+        // Capping it at 1.5 blocks keeps up to half a block of leftover as margin for processing jitter,
+        // while a standing backlog (start-up, a slow block) is dropped once instead of adding latency for
+        // the rest of the session (was 3 blocks). Trims are counted in the diagnostics.
+        io.outputMaxFill.value = pipeline.blockOut + pipeline.blockOut / 2
+        recorderLock.withLockUnchecked { recorder.reset() }
+        for c in [outputOverflow, skipped16, modelSwitches] { c.value = 0 }
+        sessionStarted = Date()
         running.withLock { $0 = true }
-        let t = Thread { [weak self] in self?.loop() }
+        let inRate = io.inputRate, outRate = io.outputRate
+        let t = Thread { [weak self] in
+            guard let self else { return }
+            self.loop(pipeline: pipeline, inRate: inRate, outRate: outRate)
+        }
         t.qualityOfService = .userInteractive
         t.name = "RVCMac.inference"
         thread = t
+        threadActive = true
         t.start()
     }
 
     func stop() {
         running.withLock { $0 = false }
-        io.stop()
+        if threadActive {
+            // the worker finishes its current block (at most one inference) and exits
+            if finished.wait(timeout: .now() + 3) == .timedOut {
+                onError?("Поток обработки не завершился за 3 с")
+            }
+            threadActive = false
+        }
         thread = nil
+        io.stop()
     }
 
-    private var isRunning: Bool { running.withLock { $0 } }
+    /// Prepares the new voice off the worker thread (call from a background task), then hands it over.
+    /// The active voice keeps playing until the worker switches at the next block boundary.
+    func switchModel(to model: LoadedVoice) throws {
+        guard model.config.key == currentModel.config.key else {
+            throw NSError(domain: "RVCMac", code: 20, userInfo: [NSLocalizedDescriptionKey: "Переключение на лету требует одинаковых настроек задержки"])
+        }
+        let state = try ModelState(model: model, outRate: io.outputRate)
+        swapLock.withLockUnchecked { $0 = (state, HostTime.now()) }
+    }
+
+    // MARK: - Session data
+
+    func sessionRows() -> [BlockRow] { recorderLock.withLockUnchecked { recorder.rows() } }
+
+    func counters(rows: [BlockRow]) -> Report.Counters {
+        var c = Report.Counters()
+        c.blocks = rows.count
+        c.inferredBlocks = rows.filter { $0.flags.inferred }.count
+        c.gatedBlocks = rows.filter { $0.flags.contains(.gated) }.count
+        c.underrunEvents = io.underrunEvents.value
+        c.underrunFrames = io.underrunFrames.value
+        c.inputOverflowFrames = io.inputRing.dropped
+        c.skippedInputMs = Double(skipped16.value) / 16
+        c.outputTrimFrames = io.trimFrames.value
+        c.outputOverflowFrames = outputOverflow.value
+        c.modelSwitches = modelSwitches.value
+        return c
+    }
 
     // MARK: - Worker loop
 
-    private func loop() {
-        let tmp = UnsafeMutablePointer<Float>.allocate(capacity: 48000)
+    private struct Pending {
+        var w0: UInt64
+        var captureNs: Double
+        var algorithmicMs: Double
+        var id: Int
+    }
+
+    private func loop(pipeline: VoicePipeline, inRate: Double, outRate: Double) {
+        defer { finished.signal() }
+        let chunk = 4096
+        let tmp = UnsafeMutablePointer<Float>.allocate(capacity: chunk)
         defer { tmp.deallocate() }
+        let inRes = Resampler(from: inRate, to: 16000)
+        let tmp16Cap = inRes.maxOutput(for: chunk)
+        let tmp16 = UnsafeMutablePointer<Float>.allocate(capacity: tmp16Cap)
+        defer { tmp16.deallocate() }
+        let block16 = pipeline.block16
+        let accCap = max(block16 * 6, tmp16Cap * 2)
+        let acc = UnsafeMutablePointer<Float>.allocate(capacity: accCap)
+        defer { acc.deallocate() }
+        var accCount = 0
+        var abs16 = 0.0  // cumulative 16 kHz index of acc[0]
+
+        func dropFront(_ n: Int) {
+            let n = min(n, accCount)
+            guard n > 0 else { return }
+            memmove(acc, acc + n, (accCount - n) * MemoryLayout<Float>.size)
+            accCount -= n
+            abs16 += Double(n)
+        }
+
+        let cfg = pipeline.cfg
+        let deviceMs = io.inputLatencyMs + io.outputLatencyMs
+        var times = StageTimes()
+        var inputResampleMs = 0.0
+        var pending: [Pending] = []
+        pending.reserveCapacity(80)
+        var lastTrimEvents = io.trimEvents.value
+        var recentStages = (0..<Stage.allCases.count).map { _ in RecentWindow(size: 64) }
+        var recentPipeline = RecentWindow(size: 64)
+        var recentE2E = RecentWindow(size: 64)
+        var periodMax = 0.0
         var stats = EngineStats()
-        var lastReport = Date()
-        var procTimes: [Double] = []
+        stats.blockMs = Double(cfg.blockMs)
+        stats.deviceInputMs = io.inputLatencyMs
+        stats.deviceOutputMs = io.outputLatencyMs
+        stats.inputBufferFrames = io.inputBufferFrames
+        stats.outputBufferFrames = io.outputBufferFrames
+        var lastReport = HostTime.now()
+        let startHost = HostTime.now()
+        var switchRequestedAt: UInt64?
+
+        func resolvePending() {
+            let trims = io.trimEvents.value
+            if trims != lastTrimEvents {
+                // trimmed samples were never played, so their timing is unknown
+                pending.removeAll(keepingCapacity: true)
+                lastTrimEvents = trims
+            }
+            guard !pending.isEmpty, let a = io.outputClock.read() else { return }
+            let anchorNs = HostTime.ns(a.hostTime)
+            var resolved = 0
+            for e in pending {
+                guard a.position >= e.w0 else { break }
+                let playNs = LatencyMath.hostNs(of: Double(e.w0), anchorPosition: Double(a.position), anchorNs: anchorNs, rate: outRate)
+                let pipelineMs = (playNs - e.captureNs) / 1e6
+                let e2e = pipelineMs + e.algorithmicMs + deviceMs
+                recorderLock.withLockUnchecked { recorder.setLatency(id: e.id, pipelineMs: pipelineMs, endToEndMs: e2e) }
+                recentPipeline.add(pipelineMs)
+                recentE2E.add(e2e)
+                resolved += 1
+            }
+            if resolved > 0 { pending.removeFirst(resolved) }
+            if pending.count > 64 { pending.removeFirst(pending.count - 64) }
+        }
+
         while isRunning {
-            let n = io.inputFIFO.read(into: tmp, count: 48000)
-            if n > 0, let rs = inResampler {
-                acc16.append(contentsOf: rs.stream(UnsafeBufferPointer(start: tmp, count: n)))
-            }
-            if acc16.count >= block16 {
-                // if we fell far behind, skip old audio instead of growing latency forever
-                if acc16.count > block16 * 4 { acc16.removeFirst(acc16.count - block16 * 2) }
-                let block = Array(acc16[0..<block16])
-                acc16.removeFirst(block16)
-                let t0 = DispatchTime.now().uptimeNanoseconds
-                do {
-                    let (out, db, gated) = try process(block)
-                    io.outputFIFO.write(out)
-                    io.outputFIFO.trim(keep: blockOut * 3)
-                    stats.inputDB = db
-                    stats.gated = gated
-                } catch {
-                    onError?("Inference error: \(error.localizedDescription)")
-                    running.withLock { $0 = false }
-                    break
+            let n = io.inputRing.read(into: tmp, count: chunk)
+            if n > 0 {
+                let t0 = HostTime.now()
+                let m = inRes.stream(UnsafeBufferPointer(start: tmp, count: n), into: tmp16, capacity: tmp16Cap)
+                inputResampleMs += HostTime.ms(from: t0, to: HostTime.now())
+                if accCount + m > accCap {
+                    let drop = accCount + m - accCap
+                    skipped16.add(min(drop, accCount))
+                    dropFront(drop)
                 }
-                let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-                procTimes.append(ms)
-                if Date().timeIntervalSince(lastReport) > 0.3 {
-                    stats.processMs = procTimes.max() ?? ms
-                    stats.blockMs = Double(cfg.blockMs)
-                    procTimes.removeAll()
-                    lastReport = Date()
-                    onStats?(stats)
+                (acc + accCount).update(from: tmp16, count: m)
+                accCount += m
+            }
+            resolvePending()
+
+            guard accCount >= block16 else {
+                usleep(1000)
+                continue
+            }
+            // if we fell far behind, skip old audio instead of growing latency forever
+            if accCount > block16 * 4 {
+                let drop = accCount - block16 * 2
+                skipped16.add(drop)
+                dropFront(drop)
+            }
+            let swap = swapLock.withLockUnchecked { (s: inout (ModelState, UInt64)?) -> (ModelState, UInt64)? in
+                let v = s
+                s = nil
+                return v
+            }
+            if let swap {
+                pipeline.replaceModel(swap.0)
+                modelLock.withLockUnchecked { activeModel = swap.0.model }
+                switchRequestedAt = swap.1
+            }
+
+            times.reset()
+            times[.inputResample] = inputResampleMs
+            inputResampleMs = 0
+            let p = params
+            let result: (db: Float, flags: BlockFlags)
+            do {
+                result = try pipeline.process(UnsafeBufferPointer(start: acc, count: block16), params: p, times: &times)
+            } catch {
+                onError?("Ошибка инференса: \(error.localizedDescription)")
+                running.withLock { $0 = false }
+                break
+            }
+            let blockEnd16 = abs16 + Double(block16)
+            dropFront(block16)
+
+            let w0 = io.outputRing.writePosition
+            let count = pipeline.outCount
+            let written = pipeline.out.withUnsafeBufferPointer { io.outputRing.write($0.baseAddress!, count: count) }
+            if written < count { outputOverflow.add(count - written) }
+
+            // when was the block's last input sample captured?
+            var captureNs = Double.nan
+            if let a = io.inputClock.read() {
+                let pos = LatencyMath.inputPosition(from16k: blockEnd16, inputRate: inRate) - 1
+                captureNs = LatencyMath.hostNs(of: pos, anchorPosition: Double(a.position), anchorNs: HostTime.ns(a.hostTime), rate: inRate)
+            }
+            let algorithmic = result.flags.contains(.bypass)
+                ? Double(cfg.blockMs)
+                : LatencyMath.algorithmicMs(blockF: cfg.blockF, solaF: cfg.solaF, crossfadeF: cfg.crossfadeF,
+                                            solaOffset: pipeline.lastOffset, outputRate: outRate)
+            let tSec = HostTime.ms(from: startHost, to: HostTime.now()) / 1000
+            let id = recorderLock.withLockUnchecked {
+                recorder.append(run: 0, t: tSec, flags: result.flags, stages: times, algorithmicMs: algorithmic, solaOffset: pipeline.lastOffset)
+            }
+            if captureNs.isFinite && written == count {
+                pending.append(Pending(w0: w0, captureNs: captureNs, algorithmicMs: algorithmic, id: id))
+            }
+            if let req = switchRequestedAt, result.flags.contains(.modelSwitch) {
+                modelSwitches.add(1)
+                let name = currentModel.voice.name
+                onModelSwitched?(name, HostTime.ms(from: req, to: HostTime.now()))
+                switchRequestedAt = nil
+            }
+
+            if result.flags.inferred {
+                for s in Stage.allCases { recentStages[s.rawValue].add(times[s]) }
+            }
+            periodMax = max(periodMax, times[.total])
+            stats.inputDB = result.db
+            stats.gated = result.flags.contains(.gated)
+            stats.algorithmicMs = algorithmic
+
+            if HostTime.ms(from: lastReport, to: HostTime.now()) > 300 {
+                stats.processMs = periodMax
+                periodMax = 0
+                for s in Stage.allCases {
+                    let d = recentStages[s.rawValue].distribution
+                    stats.stageP50[s.rawValue] = d.p50
+                    stats.stageP95[s.rawValue] = d.p95
                 }
-            } else {
-                usleep(1500)
+                stats.pipeline = recentPipeline.distribution
+                stats.endToEnd = recentE2E.distribution
+                stats.outputQueueMs = Double(io.outputRing.available) / outRate * 1000
+                var c = Report.Counters()
+                c.blocks = recorderLock.withLockUnchecked { recorder.total }
+                c.underrunEvents = io.underrunEvents.value
+                c.underrunFrames = io.underrunFrames.value
+                c.inputOverflowFrames = io.inputRing.dropped
+                c.skippedInputMs = Double(skipped16.value) / 16
+                c.outputTrimFrames = io.trimFrames.value
+                c.outputOverflowFrames = outputOverflow.value
+                c.modelSwitches = modelSwitches.value
+                stats.counters = c
+                stats.overloads = io.overloads.value
+                lastReport = HostTime.now()
+                onStats?(stats)
             }
         }
-    }
-
-    // MARK: - One block
-
-    private func process(_ block: [Float]) throws -> ([Float], Float, Bool) {
-        let p = params
-        // slide window
-        win.removeFirst(block16)
-        win.append(contentsOf: block)
-
-        // input level over the newest block + crossfade
-        let lvlCount = min(window, block16 + cfg.crossfadeF * 160)
-        var ms: Float = 0
-        win.withUnsafeBufferPointer { b in
-            vDSP_measqv(b.baseAddress! + (window - lvlCount), 1, &ms, vDSP_Length(lvlCount))
-        }
-        let db = 10 * log10f(ms + 1e-12)
-
-        if p.bypass {
-            let out = block.withUnsafeBufferPointer { bypassResampler?.stream($0) ?? [] }
-            return (out.map { $0 * p.gain }, db, false)
-        }
-        if db < p.gateDB {
-            return ([Float](repeating: 0, count: blockOut), db, true)
-        }
-
-        // 1. ContentVec
-        win.withUnsafeBufferPointer { b in
-            audioArray.dataPointer.assumingMemoryBound(to: Float.self).update(from: b.baseAddress!, count: window)
-        }
-        let embOut = try model.embedder.prediction(from: try MLDictionaryFeatureProvider(dictionary: ["audio": audioArray]))
-        guard let phone = embOut.featureValue(for: model.voice.embOutput)?.multiArrayValue else {
-            throw NSError(domain: "RVCMac", code: 1, userInfo: [NSLocalizedDescriptionKey: "embedder output missing"])
-        }
-
-        // 2. FCPE -> f0 per 10 ms frame
-        let pitchOut = try model.pitchModel.prediction(from: try MLDictionaryFeatureProvider(dictionary: ["audio": audioArray]))
-        guard let latent = pitchOut.featureValue(for: "latent")?.multiArrayValue else {
-            throw NSError(domain: "RVCMac", code: 2, userInfo: [NSLocalizedDescriptionKey: "fcpe output missing"])
-        }
-        var f0 = decodeF0(latent)  // F values
-        let shift = powf(2, Float(p.pitch) / 12)
-        for i in 0..<f0.count { f0[i] *= shift }
-
-        // 3. coarse pitch for the encoder
-        let melMin: Float = 1127 * logf(1 + 50 / 700), melMax: Float = 1127 * logf(1 + 1100 / 700)
-        let pitchPtr = pitchArray.dataPointer.assumingMemoryBound(to: Int32.self)
-        for i in 0..<cfg.F {
-            var mel = 1127 * logf(1 + f0[i] / 700)
-            mel = (mel - melMin) * 254 / (melMax - melMin) + 1
-            pitchPtr[i] = Int32(max(1, min(255, mel.rounded())))
-        }
-
-        // 3b. features: index retrieval on 20 ms frames, x2 upscale to 10 ms frames, protect
-        buildFeatures(floats(phone), f0: f0, params: p)
-
-        // 4. NSF excitation for the decoded frames (same maths as RVC SineGen)
-        let upp = model.upp
-        let sr = Double(model.voice.sr)
-        let sinePtr = sineArray.dataPointer.assumingMemoryBound(to: Float.self)
-        var phase = 0.0
-        for i in 0..<cfg.R {
-            let f = Double(f0[cfg.skip + i])
-            let voiced = f > 0
-            let step = f / sr
-            for j in 0..<upp {
-                phase += step
-                phase -= floor(phase)
-                let idx = i * upp + j
-                if voiced {
-                    sinePtr[idx] = Float(sin(2 * Double.pi * phase)) * 0.1 + 0.003 * rng.next()
-                } else {
-                    sinePtr[idx] = (0.1 / 3) * rng.next()
-                }
-            }
-        }
-
-        // 5. prior noise
-        let noisePtr = noiseArray.dataPointer.assumingMemoryBound(to: Float.self)
-        for i in 0..<noiseArray.count { noisePtr[i] = rng.next() }
-
-        // 6. synthesizer
-        let synthIn = try MLDictionaryFeatureProvider(dictionary: [
-            "phone": phoneArray, "pitch": pitchArray, "noise": noiseArray, "sine": sineArray,
-        ])
-        let synthOut = try model.synth.prediction(from: synthIn)
-        guard let audio = synthOut.featureValue(for: "audio")?.multiArrayValue else {
-            throw NSError(domain: "RVCMac", code: 3, userInfo: [NSLocalizedDescriptionKey: "synth output missing"])
-        }
-        let modelAudio = floats(audio)
-
-        // 7. to output rate, SOLA crossfade
-        let seg = outResampler!.segment(modelAudio, outCount: segOut)
-        return (sola(seg, gain: p.gain), db, false)
-    }
-
-    /// ContentVec frames [E x C] -> phoneArray [F x C], with optional index blending and protect (as in RVC).
-    private func buildFeatures(_ feats: [Float], f0: [Float], params p: EngineParams) {
-        let C = model.voice.embChannels
-        let E = feats.count / C
-        var mixed = feats
-        let useIndex = model.indexVectors != nil && p.indexRatio > 0
-        if useIndex, let vecs = model.indexVectors, let norms = model.indexNorms {
-            let first = min(cfg.skip / 2, E - 1)  // only frames that were not searched before matter
-            let Q = E - first
-            let M = norms.count
-            let k = min(8, M)
-            var dots = [Float](repeating: 0, count: Q * M)
-            feats.withUnsafeBufferPointer { x in
-                vecs.withUnsafeBufferPointer { y in
-                    dots.withUnsafeMutableBufferPointer { d in
-                        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, Int32(Q), Int32(M), Int32(C),
-                                    1, x.baseAddress! + first * C, Int32(C), y.baseAddress!, Int32(C),
-                                    0, d.baseAddress!, Int32(M))
-                    }
-                }
-            }
-            var bestD = [Float](repeating: 0, count: k)
-            var bestI = [Int](repeating: 0, count: k)
-            let r = p.indexRatio
-            for q in 0..<Q {
-                var xx: Float = 0
-                feats.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress! + (first + q) * C, 1, &xx, vDSP_Length(C)) }
-                // top-k smallest squared L2 distances
-                var filled = 0
-                var worst = 0
-                let row = q * M
-                for i in 0..<M {
-                    let dist = max(xx + norms[i] - 2 * dots[row + i], 0)
-                    if filled < k {
-                        bestD[filled] = dist; bestI[filled] = i; filled += 1
-                        if filled == k { worst = bestD.indices.max { bestD[$0] < bestD[$1] }! }
-                    } else if dist < bestD[worst] {
-                        bestD[worst] = dist; bestI[worst] = i
-                        worst = bestD.indices.max { bestD[$0] < bestD[$1] }!
-                    }
-                }
-                var wsum: Float = 0
-                var w = [Float](repeating: 0, count: k)
-                for j in 0..<k { w[j] = 1 / max(bestD[j] * bestD[j], 1e-12); wsum += w[j] }
-                let base = (first + q) * C
-                for c in 0..<C {
-                    var acc: Float = 0
-                    for j in 0..<k { acc += vecs[bestI[j] * C + c] * w[j] }
-                    mixed[base + c] = acc / wsum * r + feats[base + c] * (1 - r)
-                }
-            }
-        }
-        // upscale: append last frame, repeat each frame twice, keep F frames
-        let dst = phoneArray.dataPointer.assumingMemoryBound(to: Float.self)
-        let protectOn = useIndex && p.protect < 0.5
-        for t in 0..<cfg.F {
-            let e = min(t / 2, E - 1)  // frame E (the appended copy) equals frame E-1
-            let pf: Float = protectOn ? (f0[t] > 0 ? 1 : p.protect) : 1
-            for c in 0..<C {
-                let v = mixed[e * C + c]
-                dst[t * C + c] = pf == 1 ? v : v * pf + feats[e * C + c] * (1 - pf)
-            }
-        }
-    }
-
-    private func decodeF0(_ latent: MLMultiArray) -> [Float] {
-        let values = floats(latent)
-        let dims = model.fcpe.outDims
-        let frames = values.count / dims
-        let thr = Float(model.fcpe.threshold)
-        var f0 = [Float](repeating: 0, count: cfg.F)
-        let start = max(frames - cfg.F, 0)  // keep the newest F frames
-        for t in 0..<min(cfg.F, frames) {
-            let base = (start + t) * dims
-            var maxV: Float = -1, maxI = 0
-            for k in 0..<dims where values[base + k] > maxV { maxV = values[base + k]; maxI = k }
-            if maxV <= thr { continue }
-            var num: Float = 0, den: Float = 0
-            for k in max(0, maxI - 4)...min(dims - 1, maxI + 4) {
-                num += centTable[k] * values[base + k]
-                den += values[base + k]
-            }
-            f0[t] = 10 * powf(2, (num / max(den, 1e-9)) / 1200)
-        }
-        return f0
-    }
-
-    private func sola(_ audio: [Float], gain: Float) -> [Float] {
-        var bestOffset = 0
-        if cfOut > 0 {
-            var best: Float = -.greatestFiniteMagnitude
-            audio.withUnsafeBufferPointer { a in
-                solaBuffer.withUnsafeBufferPointer { s in
-                    for off in 0...searchOut {
-                        var num: Float = 0, energy: Float = 0
-                        vDSP_dotpr(a.baseAddress! + off, 1, s.baseAddress!, 1, &num, vDSP_Length(cfOut))
-                        vDSP_svesq(a.baseAddress! + off, 1, &energy, vDSP_Length(cfOut))
-                        let score = num / sqrtf(energy + 1e-8)
-                        if score > best { best = score; bestOffset = off }
-                    }
-                }
-            }
-        }
-        var out = [Float](repeating: 0, count: blockOut)
-        for i in 0..<blockOut {
-            var v = audio[bestOffset + i]
-            if i < cfOut { v = v * fadeIn[i] + solaBuffer[i] * fadeOut[i] }
-            out[i] = v * gain
-        }
-        for i in 0..<cfOut { solaBuffer[i] = audio[bestOffset + blockOut + i] }
-        return out
-    }
-
-    /// Copies any MLMultiArray (float32/float16/double, any strides) into a dense [Float].
-    private func floats(_ a: MLMultiArray) -> [Float] {
-        let n = a.count
-        var out = [Float](repeating: 0, count: n)
-        let shape = a.shape.map { $0.intValue }
-        let strides = a.strides.map { $0.intValue }
-        var dense = true
-        var expect = 1
-        for d in stride(from: shape.count - 1, through: 0, by: -1) {
-            if shape[d] > 1 && strides[d] != expect { dense = false }
-            expect *= shape[d]
-        }
-        // offset of the k-th element in logical (row-major) order
-        func offset(_ k: Int) -> Int {
-            if dense { return k }
-            var rem = k, off = 0
-            for d in stride(from: shape.count - 1, through: 0, by: -1) {
-                off += (rem % shape[d]) * strides[d]
-                rem /= shape[d]
-            }
-            return off
-        }
-        switch a.dataType {
-        case .float32:
-            let p = a.dataPointer.assumingMemoryBound(to: Float.self)
-            if dense {
-                out.withUnsafeMutableBufferPointer { $0.baseAddress!.update(from: p, count: n) }
-            } else {
-                for k in 0..<n { out[k] = p[offset(k)] }
-            }
-        case .float16:
-            let p = a.dataPointer.assumingMemoryBound(to: Float16.self)
-            for k in 0..<n { out[k] = Float(p[offset(k)]) }
-        case .double:
-            let p = a.dataPointer.assumingMemoryBound(to: Double.self)
-            for k in 0..<n { out[k] = Float(p[offset(k)]) }
-        default:
-            for k in 0..<n { out[k] = a[k].floatValue }
-        }
-        return out
     }
 }

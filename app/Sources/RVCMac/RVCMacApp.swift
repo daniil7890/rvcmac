@@ -1,4 +1,5 @@
 import AppKit
+import RVCMacCore
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -7,7 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// With "keep in menu bar" on, closing the window leaves the engine running behind the menu bar icon.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !UserDefaults.standard.bool(forKey: "keepInMenuBar")
+    }
 }
 
 @main
@@ -16,41 +20,103 @@ struct RVCMacApp: App {
     @StateObject private var state = AppState()
 
     var body: some Scene {
-        WindowGroup("RVCMac") {
+        WindowGroup("RVCMac", id: "main") {
             ContentView()
                 .environmentObject(state)
-                .frame(minWidth: 560, minHeight: 640)
+                .frame(minWidth: 600, minHeight: 700)
         }
         .windowResizability(.contentMinSize)
+
+        Window("Диагностика", id: "diagnostics") {
+            DiagnosticsView()
+                .environmentObject(state)
+                .frame(minWidth: 720, minHeight: 620)
+        }
+
+        Settings {
+            SettingsView()
+                .environmentObject(state)
+        }
+
+        MenuBarExtra {
+            MenuBarContent().environmentObject(state)
+        } label: {
+            Image(systemName: menuIcon)
+        }
     }
+
+    private var menuIcon: String {
+        if !state.running { return "waveform.circle" }
+        if state.effectiveMuted { return "mic.slash.circle.fill" }
+        if state.bypass { return "arrow.left.and.right.circle" }
+        return "waveform.circle.fill"
+    }
+}
+
+// MARK: - Main window
+
+/// View-local state (see DiagnosticsUI for why this is not @State).
+final class ContentUI: ObservableObject {
+    @Published var newProfileName = ""
+    @Published var askProfileName = false
 }
 
 struct ContentView: View {
     @EnvironmentObject var s: AppState
+    @Environment(\.openWindow) private var openWindow
+    @StateObject private var ui = ContentUI()
 
-    private let blockOptions = [100, 150, 200, 250, 300, 350, 400, 500]
+    private let blockOptions = [80, 100, 120, 150, 200, 250, 300, 350, 400, 500]
     private let extraOptions = [200, 300, 500, 750, 1000]
     private let crossfadeOptions = [50, 100, 150, 200]
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
+                Section("Профиль") {
+                    HStack {
+                        Picker("Профиль", selection: Binding(
+                            get: { s.activeProfileID },
+                            set: { id in if let p = s.profiles.first(where: { $0.id == id }) { s.applyProfile(p) } else { s.activeProfileID = nil } }
+                        )) {
+                            Text("— без профиля —").tag(UUID?.none)
+                            ForEach(s.profiles) { Text($0.name).tag(UUID?.some($0.id)) }
+                        }
+                        Button("Сохранить") { s.updateActiveProfile() }
+                            .disabled(s.activeProfile == nil)
+                            .help("Записать текущие настройки в выбранный профиль")
+                        Button("Новый…") { ui.newProfileName = ""; ui.askProfileName = true }
+                        Button(role: .destructive) { s.deleteActiveProfile() } label: { Image(systemName: "trash") }
+                            .disabled(s.activeProfile == nil)
+                            .help("Удалить профиль")
+                    }
+                }
+
                 Section("Голос") {
                     HStack {
                         Picker("Модель", selection: $s.selectedVoice) {
                             if s.voices.isEmpty { Text("— нет моделей —").tag("") }
                             ForEach(s.voices, id: \.name) { v in
-                                Text("\(v.name)  ·  \(v.version) · \(v.sr / 1000) кГц").tag(v.name)
+                                Text("\(s.voiceIssues[v.name] == nil ? "" : "⚠︎ ")\(v.name)  ·  \(v.version) · \(v.sr / 1000) кГц").tag(v.name)
                             }
                         }
-                        Button("Импорт…") { s.importModel() }
-                        Button("Index…") { s.addIndex() }
-                            .disabled(s.currentVoice == nil)
-                            .help("Подключить .index к выбранному голосу")
-                        Button { s.refreshVoices() } label: { Image(systemName: "arrow.clockwise") }
-                            .help("Обновить список")
+                        .disabled(s.busy)
+                        .help(s.running ? "Смена голоса на лету: новый голос готовится в фоне и подмешивается кроссфейдом" : "")
+                        Group {
+                            Button("Импорт…") { s.importModel() }
+                            Button("Index…") { s.addIndex() }
+                                .disabled(s.currentVoice == nil)
+                                .help("Подключить .index к выбранному голосу")
+                            Button { s.refreshVoices() } label: { Image(systemName: "arrow.clockwise") }
+                                .help("Обновить список")
+                        }
+                        .disabled(s.busy || s.running)
                     }
-                    .disabled(s.busy || s.running)
+                    if let issues = s.voiceIssues[s.selectedVoice] {
+                        Text("Проблемы модели: " + issues.joined(separator: "; "))
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                    }
                 }
 
                 Section("Задержка") {
@@ -117,17 +183,46 @@ struct ContentView: View {
                         Text("У голоса нет index — кнопка «Index…» подключит его.")
                             .foregroundStyle(.secondary)
                     }
-                    Toggle("Без обработки (проверка маршрута звука)", isOn: $s.bypass)
+                    HStack {
+                        Toggle("Без обработки (bypass)", isOn: $s.bypass)
+                        Spacer()
+                        Toggle("Mute", isOn: $s.muted)
+                        Toggle("Push-to-talk", isOn: $s.pushToTalk)
+                            .help("Звук идёт, только пока зажата клавиша push-to-talk (Настройки → Горячие клавиши)")
+                    }
                 }
             }
             .formStyle(.grouped)
 
             statusBar
         }
+        .alert("Новый профиль", isPresented: $ui.askProfileName) {
+            TextField("Название", text: $ui.newProfileName)
+            Button("Сохранить") { s.saveProfile(named: ui.newProfileName) }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Сохраняет голос, задержку, вычисления и параметры звука.")
+        }
     }
 
     private var statusBar: some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                StateBadge(text: s.running ? "МИКРОФОН" : "ОСТАНОВЛЕНО", color: s.running ? .green : .secondary)
+                if s.running {
+                    if s.bypass {
+                        StateBadge(text: "BYPASS", color: .orange)
+                    } else {
+                        StateBadge(text: "ОБРАБОТКА", color: .blue)
+                    }
+                    if s.effectiveMuted { StateBadge(text: s.pushToTalk && !s.muted ? "PTT" : "MUTE", color: .red) }
+                }
+                if let p = s.activeProfile { StateBadge(text: p.name, color: .purple) }
+                if s.lastError != nil { StateBadge(text: "ОШИБКА", color: .red) }
+                Spacer()
+                Button { openWindow(id: "diagnostics") } label: { Label("Диагностика", systemImage: "gauge.with.dots.needle.33percent") }
+                    .controlSize(.small)
+            }
             HStack(spacing: 12) {
                 Button(action: { s.toggle() }) {
                     Label(s.running ? "Стоп" : "Старт", systemImage: s.running ? "stop.fill" : "play.fill")
@@ -137,15 +232,14 @@ struct ContentView: View {
                 .controlSize(.large)
                 .buttonStyle(.borderedProminent)
                 .tint(s.running ? .red : .accentColor)
-                .disabled(s.busy || (!s.running && s.currentConfig == nil))
+                .disabled(s.busy || s.benchRunning || (!s.running && s.currentConfig == nil))
 
                 if s.busy { ProgressView().controlSize(.small) }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(s.status).lineLimit(1)
                     if s.running {
                         let load = s.stats.blockMs > 0 ? s.stats.processMs / s.stats.blockMs : 0
-                        Text(String(format: "обработка %.0f мс из %.0f мс · вход %.0f дБ%@",
-                                    s.stats.processMs, s.stats.blockMs, s.stats.inputDB, s.stats.gated ? " · тишина" : ""))
+                        Text(liveLine)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(load < 0.7 ? Color.green : (load < 1 ? Color.orange : Color.red))
                     }
@@ -160,11 +254,155 @@ struct ContentView: View {
                         .textSelection(.enabled)
                         .id("logEnd")
                 }
-                .frame(height: 120)
+                .frame(height: 110)
                 .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
                 .onChange(of: s.log) { _, _ in proxy.scrollTo("logEnd", anchor: .bottom) }
             }
         }
         .padding(12)
+    }
+
+    private var liveLine: String {
+        var parts = [String(format: "обработка %.0f из %.0f мс", s.stats.processMs, s.stats.blockMs)]
+        if s.stats.endToEnd.count > 0 { parts.append(String(format: "задержка ≈%.0f мс", s.stats.endToEnd.p50)) }
+        parts.append(String(format: "вход %.0f дБ", s.stats.inputDB))
+        if s.stats.gated { parts.append("тишина") }
+        if s.stats.counters.underrunEvents > 0 { parts.append("underrun \(s.stats.counters.underrunEvents)") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+struct StateBadge: View {
+    let text: String
+    let color: Color
+    var body: some View {
+        Text(text)
+            .font(.caption.bold())
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
+    }
+}
+
+// MARK: - Menu bar
+
+struct MenuBarContent: View {
+    @EnvironmentObject var s: AppState
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Text(s.running ? "Работает: \(s.selectedVoice)" : "Остановлено")
+        if s.running, s.stats.endToEnd.count > 0 {
+            Text(String(format: "Задержка ≈%.0f мс · обработка %.0f мс", s.stats.endToEnd.p50, s.stats.processMs))
+        }
+        Divider()
+        Button(s.running ? "Стоп" : "Старт") { s.toggle() }
+            .disabled(s.busy || s.benchRunning || (!s.running && s.currentConfig == nil))
+        Toggle("Mute", isOn: $s.muted)
+        Toggle("Без обработки", isOn: $s.bypass)
+        Toggle("Push-to-talk", isOn: $s.pushToTalk)
+        if !s.profiles.isEmpty {
+            Divider()
+            ForEach(s.profiles) { p in
+                Button((p.id == s.activeProfileID ? "✓ " : "   ") + p.name) { s.applyProfile(p) }
+            }
+        }
+        Divider()
+        Button("Открыть RVCMac") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        Button("Диагностика") { openWindow(id: "diagnostics"); NSApp.activate(ignoringOtherApps: true) }
+        Divider()
+        Button("Выйти") { s.stop(); NSApp.terminate(nil) }
+    }
+}
+
+// MARK: - Settings
+
+struct SettingsView: View {
+    @EnvironmentObject var s: AppState
+
+    var body: some View {
+        Form {
+            Section("Горячие клавиши (работают глобально)") {
+                ForEach(HotkeyAction.allCases) { action in
+                    LabeledContent(action.title) {
+                        HStack {
+                            HotkeyRecorder(hotkey: Binding(get: { s.hotkeys[action] }, set: { s.hotkeys[action] = $0 }))
+                            if s.hotkeyFailures.contains(action) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                    .help("Сочетание занято другим приложением")
+                            }
+                        }
+                    }
+                }
+                Button("Сбросить по умолчанию") { s.resetHotkeys() }
+                Text("Нажми на поле и затем сочетание. Нужен хотя бы один модификатор (⌘⌥⌃⇧), кроме F-клавиш. ⌫ — очистить, ⎋ — отмена.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Окно") {
+                Toggle("Оставаться в строке меню после закрытия окна", isOn: $s.keepInMenuBar)
+            }
+            Section("Отчёты и приватность") {
+                Toggle("Не сохранять в отчётах имена устройств и пути к файлам", isOn: $s.anonymizeReports)
+                Text("Аудио обрабатывается только локально. В лог и отчёты звук не пишется; WAV сохраняется лишь по флажку в бенчмарке.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 560, height: 480)
+    }
+}
+
+/// Click, then press a shortcut. Uses a local key monitor, so it needs no extra permissions.
+final class HotkeyRecorderModel: ObservableObject {
+    @Published var recording = false
+    private var monitor: Any?
+
+    func begin(onKey: @escaping (NSEvent) -> Bool) {
+        stop()
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if onKey(event) { self?.stop() }
+            return nil
+        }
+    }
+
+    func stop() {
+        recording = false
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        monitor = nil
+    }
+
+    deinit { if let m = monitor { NSEvent.removeMonitor(m) } }
+}
+
+struct HotkeyRecorder: View {
+    @Binding var hotkey: Hotkey?
+    @StateObject private var model = HotkeyRecorderModel()
+
+    var body: some View {
+        Button(model.recording ? "Нажми сочетание…" : (hotkey?.display ?? "не задано")) {
+            if model.recording {
+                model.stop()
+            } else {
+                let binding = $hotkey
+                // returns true when recording is finished
+                model.begin { event in
+                    switch Int(event.keyCode) {
+                    case 53: return true                               // escape
+                    case 51, 117: binding.wrappedValue = nil; return true  // delete / forward delete
+                    default:
+                        if let hk = Hotkey(event: event) {
+                            binding.wrappedValue = hk
+                            return true
+                        }
+                        NSSound.beep()
+                        return false
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 150)
+        .onDisappear { model.stop() }
     }
 }

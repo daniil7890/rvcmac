@@ -28,7 +28,18 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/RVCMac"
 
 # icon, localized Info.plist strings
-cp "$ROOT/app/Resources/AppIcon.icns" "$APP/Contents/Resources/"
+# build the full icon set with Apple's own tools when available (all 10 sizes), else use the committed .icns
+ICONSET="$ROOT/app/.build/AppIcon.iconset"
+if command -v iconutil >/dev/null && command -v sips >/dev/null; then
+  rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+  for s in 16 32 128 256 512; do
+    sips -z $s $s "$ROOT/app/Resources/AppIcon.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s*2)) $((s*2)) "$ROOT/app/Resources/AppIcon.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+else
+  cp "$ROOT/app/Resources/AppIcon.icns" "$APP/Contents/Resources/"
+fi
 cp -R "$ROOT/app/Resources/en.lproj" "$ROOT/app/Resources/ru.lproj" "$APP/Contents/Resources/"
 
 # the model converter travels inside the app; its Python environment is installed on first use
@@ -80,6 +91,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 codesign --force --sign - "$APP"
+# Finder and the Dock cache icons per path: re-register so a rebuilt app shows its new icon
+touch "$APP"
+LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+[[ -x "$LSREG" ]] && "$LSREG" -f "$APP" || true
 echo "=== built: $APP ==="
 
 if [[ $RELEASE -eq 1 ]]; then

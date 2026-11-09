@@ -122,6 +122,7 @@ struct HarnessMetrics: Codable {
     var seed: UInt64
     var pacing: String
     var report: Report
+    var processWallMs: Distribution     // whole process() call; block_total stops before the autorelease pool drains
     var memory: MemorySummary
     var queueModel: QueueSummary
     var determinism: Determinism?
@@ -298,6 +299,7 @@ func runHarness(_ o: Options) throws {
     let recorder = BlockRecorder(capacity: total + 1)
     var rss = [Double](repeating: 0, count: total)
     var footprint = [Double](repeating: 0, count: total)
+    var wall = [Double](repeating: 0, count: total)   // around the whole process() call, autorelease pool drain included
     let outCapacity = keepAudio ? nBlocks * pipeline.blockOut : 0
     var reference = [Float](repeating: 0, count: outCapacity)
     var current = [Float](repeating: 0, count: outCapacity)
@@ -365,7 +367,9 @@ func runHarness(_ o: Options) throws {
                 times.reset()
                 times[.inputResample] = inputResampleMs
                 inputResampleMs = 0
+                let wall0 = HostTime.now()
                 let res = try pipeline.process(UnsafeBufferPointer(start: acc, count: block16), params: params, times: &times)
+                wall[recorded] = HostTime.ms(from: wall0, to: HostTime.now())
                 memmove(acc, acc + block16, (accCount - block16) * MemoryLayout<Float>.size)
                 accCount -= block16
                 totalMs += times[.total]
@@ -430,7 +434,7 @@ func runHarness(_ o: Options) throws {
     modelled.reserveCapacity(rows.count)
     var under = 0, underFrames = 0, trims = 0, trimFrames = 0
     for run in 1...runs {
-        let processing = rows.filter { $0.run == run }.map { $0.stages[Stage.total.rawValue] + $0.stages[Stage.inputResample.rawValue] }
+        let processing = rows.filter { $0.run == run }.enumerated().map { $1.stages[Stage.inputResample.rawValue] + wall[(run - 1) * nBlocks + $0] }
         let r = QueueModel.run(processingMs: processing, config: qc)
         modelled += r.blocks
         under += r.underrunEvents; underFrames += r.underrunFrames; trims += r.trimEvents; trimFrames += r.trimFrames
@@ -481,16 +485,17 @@ func runHarness(_ o: Options) throws {
                       rmsDifferenceDB: bitExact ? -300 : worstRmsDB, sha256: hashes)
         : nil
     let metrics = HarnessMetrics(commit: gitCommit(in: home), seed: seed, pacing: pacingArg, report: report,
+                                 processWallMs: Distribution.of(wall),
                                  memory: memory, queueModel: queue, determinism: determinism)
     try ReportMath.encoder().encode(metrics).write(to: outDir.appendingPathComponent("metrics.json"), options: .atomic)
 
     // blocks.csv: the report's columns plus memory and the modelled queue figures.
     func cell(_ v: Double, _ format: String = "%.3f") -> String { v.isFinite ? String(format: format, v) : "" }
     var lines = ReportMath.csv(rows).split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-    lines[0] += ",rss_mb,footprint_mb,model_input_wait_ms,model_output_queue_ms,model_pipeline_ms"
+    lines[0] += ",process_wall_ms,rss_mb,footprint_mb,model_input_wait_ms,model_output_queue_ms,model_pipeline_ms"
     for i in 0..<rows.count {
         let m = modelled[i]
-        lines[i + 1] += "," + cell(rss[i], "%.2f") + "," + cell(footprint[i], "%.2f")
+        lines[i + 1] += "," + cell(wall[i]) + "," + cell(rss[i], "%.2f") + "," + cell(footprint[i], "%.2f")
         lines[i + 1] += "," + cell(m.inputWaitMs) + "," + cell(m.outputQueueMs) + "," + cell(m.pipelineMs)
     }
     try (lines.joined(separator: "\n") + "\n").write(to: outDir.appendingPathComponent("blocks.csv"), atomically: true, encoding: .utf8)

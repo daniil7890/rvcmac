@@ -54,11 +54,15 @@ package struct FcpeMeta: Codable {
 }
 
 package enum RVCMacPaths {
+    /// Set by the offline harness before `home` is first read (it has no Info.plist). The app never sets it.
+    package static var homeOverride: URL?
+
     /// Where voices, the converter environment, reports and settings files live:
     /// 1. Info.plist key RVCMacHome (local developer builds point it at the checkout),
     /// 2. ~/projects/rvcmac when it already holds voices from an older version (kept as is, nothing is moved),
     /// 3. otherwise ~/Library/Application Support/RVCMac.
     package static let home: URL = {
+        if let homeOverride { return homeOverride }
         let fm = FileManager.default
         if let s = Bundle.main.object(forInfoDictionaryKey: "RVCMacHome") as? String, !s.isEmpty {
             return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)

@@ -33,6 +33,15 @@ package struct Gaussian {
     }
 }
 
+extension Gaussian {
+    /// A generator with a reproducible sequence (offline harness).
+    init(seed: UInt64) {
+        self.init()
+        let s = seed ^ 0x9E3779B97F4A7C15
+        state = s != 0 ? s : 0x9E3779B97F4A7C15
+    }
+}
+
 @inline(__always) private func nowNs() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
 @inline(__always) private func msSince(_ t: UInt64) -> Double { Double(nowNs() &- t) / 1e6 }
 
@@ -134,6 +143,16 @@ package final class VoicePipeline {
         for i in 0..<win.count { win[i] = 0 }
         for i in 0..<solaBuffer.count { solaBuffer[i] = 0 }
         outCount = 0
+    }
+
+    /// Makes the next `process` calls reproducible: clears the audio history and reseeds the noise.
+    /// Only the offline harness calls this; the live engine keeps using `reset()`.
+    package func resetForHarness(seed: UInt64) {
+        reset()
+        for i in 0..<f0.count { f0[i] = 0 }
+        rng = Gaussian(seed: seed)
+        lastOffset = 0
+        switched = false
     }
 
     /// Takes effect on the next block; the SOLA crossfade blends the old voice into the new one.

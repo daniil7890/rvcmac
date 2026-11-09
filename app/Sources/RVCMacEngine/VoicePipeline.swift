@@ -164,6 +164,10 @@ package final class VoicePipeline {
 
     /// Processes one block of `block16` samples at 16 kHz into `out`.
     package func process(_ block: UnsafeBufferPointer<Float>, params p: EngineParams, times: inout StageTimes) throws -> (db: Float, flags: BlockFlags) {
+        try autoreleasepool { try processBlock(block, params: p, times: &times) }
+    }
+
+    private func processBlock(_ block: UnsafeBufferPointer<Float>, params p: EngineParams, times: inout StageTimes) throws -> (db: Float, flags: BlockFlags) {
         let tBlock = nowNs()
         var flags: BlockFlags = []
         if switched { flags.insert(.modelSwitch); switched = false }

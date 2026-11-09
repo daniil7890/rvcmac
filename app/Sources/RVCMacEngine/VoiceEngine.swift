@@ -194,32 +194,12 @@ package final class VoiceEngine {
 
     private func loop(pipeline: VoicePipeline, inRate: Double, outRate: Double) {
         defer { finished.signal() }
-        let chunk = 4096
-        let tmp = UnsafeMutablePointer<Float>.allocate(capacity: chunk)
-        defer { tmp.deallocate() }
-        let inRes = Resampler(from: inRate, to: 16000)
-        let tmp16Cap = inRes.maxOutput(for: chunk)
-        let tmp16 = UnsafeMutablePointer<Float>.allocate(capacity: tmp16Cap)
-        defer { tmp16.deallocate() }
         let block16 = pipeline.block16
-        let accCap = max(block16 * 6, tmp16Cap * 2)
-        let acc = UnsafeMutablePointer<Float>.allocate(capacity: accCap)
-        defer { acc.deallocate() }
-        var accCount = 0
-        var abs16 = 0.0  // cumulative 16 kHz index of acc[0]
-
-        func dropFront(_ n: Int) {
-            let n = min(n, accCount)
-            guard n > 0 else { return }
-            memmove(acc, acc + n, (accCount - n) * MemoryLayout<Float>.size)
-            accCount -= n
-            abs16 += Double(n)
-        }
+        let input = InputAssembler(inputRate: inRate, block16: block16, skipped: skipped16)
 
         let cfg = pipeline.cfg
         let deviceMs = io.inputLatencyMs + io.outputLatencyMs
         var times = StageTimes()
-        var inputResampleMs = 0.0
         var pending: [Pending] = []
         pending.reserveCapacity(80)
         var lastTrimEvents = io.trimEvents.value
@@ -262,31 +242,14 @@ package final class VoiceEngine {
         }
 
         while isRunning {
-            let n = io.inputRing.read(into: tmp, count: chunk)
-            if n > 0 {
-                let t0 = HostTime.now()
-                let m = inRes.stream(UnsafeBufferPointer(start: tmp, count: n), into: tmp16, capacity: tmp16Cap)
-                inputResampleMs += HostTime.ms(from: t0, to: HostTime.now())
-                if accCount + m > accCap {
-                    let drop = accCount + m - accCap
-                    skipped16.add(min(drop, accCount))
-                    dropFront(drop)
-                }
-                (acc + accCount).update(from: tmp16, count: m)
-                accCount += m
-            }
+            input.pull(from: io.inputRing)
             resolvePending()
 
-            guard accCount >= block16 else {
+            guard input.count >= block16 else {
                 usleep(1000)
                 continue
             }
-            // if we fell far behind, skip old audio instead of growing latency forever
-            if accCount > block16 * 4 {
-                let drop = accCount - block16 * 2
-                skipped16.add(drop)
-                dropFront(drop)
-            }
+            input.limitBacklog()
             let swap = swapLock.withLockUnchecked { (s: inout (ModelState, UInt64)?) -> (ModelState, UInt64)? in
                 let v = s
                 s = nil
@@ -299,19 +262,17 @@ package final class VoiceEngine {
             }
 
             times.reset()
-            times[.inputResample] = inputResampleMs
-            inputResampleMs = 0
+            times[.inputResample] = input.takeResampleMs()
             let p = params
             let result: (db: Float, flags: BlockFlags)
             do {
-                result = try pipeline.process(UnsafeBufferPointer(start: acc, count: block16), params: p, times: &times)
+                result = try pipeline.process(input.block, params: p, times: &times)
             } catch {
                 onError?(trf("Ошибка инференса: %@", "\(error.localizedDescription)"))
                 running.withLock { $0 = false }
                 break
             }
-            let blockEnd16 = abs16 + Double(block16)
-            dropFront(block16)
+            let blockEnd16 = input.consumeBlock()
 
             let w0 = io.outputRing.writePosition
             let count = pipeline.outCount

@@ -18,6 +18,9 @@ usage: rvcmac-harness (--input FILE | --synthetic SECONDS) --voice NAME --block 
   --gate DB                       silence gate (default -60, as in the app)
   --gate-hysteresis DB            gate closes this far below --gate (default 6)
   --gate-hold MS                  gate hold time (default 200)
+  --overload-extra-ms MS          simulate overload on a virtual clock: add MS to each block in the window (off by default)
+  --overload-start S              overload window start, seconds (default 3)
+  --overload-seconds S            overload window length, seconds (default 5)
   --device-rate HZ                simulated input device rate (default 48000)
   --output-rate HZ                output rate (default 48000)
   --input-buffer FRAMES           simulated input buffer (default 512)
@@ -40,6 +43,7 @@ struct Options {
     var values: [String: String] = [:]
     static let known: Set<String> = [
         "input", "synthetic", "voice", "block", "extra", "crossfade", "compute", "pitch", "index", "protect", "gate", "gate-hysteresis", "gate-hold",
+        "overload-start", "overload-seconds", "overload-extra-ms",
         "device-rate", "output-rate", "input-buffer", "output-buffer", "runs", "warmup", "pacing", "seed",
         "loop-minutes", "home", "out",
     ]
@@ -308,12 +312,16 @@ func runHarness(_ o: Options) throws {
     var reference = [Float](repeating: 0, count: outCapacity)
     var current = [Float](repeating: 0, count: outCapacity)
 
-    let tmp16Cap = Resampler(from: deviceRate, to: 16000).maxOutput(for: inputBuffer)
     let tmp = UnsafeMutablePointer<Float>.allocate(capacity: inputBuffer)
-    let tmp16 = UnsafeMutablePointer<Float>.allocate(capacity: tmp16Cap)
-    let accCap = max(block16 * 6, tmp16Cap * 2)
-    let acc = UnsafeMutablePointer<Float>.allocate(capacity: accCap)
-    defer { tmp.deallocate(); tmp16.deallocate(); acc.deallocate() }
+    defer { tmp.deallocate() }
+    let inputRing = SampleRing(capacity: 192_000 * 2)
+    let skipped16 = AtomicInt(0)
+    let overloadExtraMs = try o.double("overload-extra-ms", 0)
+    let overloadStartMs = try o.double("overload-start", 3) * 1000
+    let overloadEndMs = overloadStartMs + (try o.double("overload-seconds", 5)) * 1000
+    let overloaded = overloadExtraMs > 0
+    var backlogMs = [Double](repeating: 0, count: overloaded ? total : 0)
+    var virtualStartMs = [Double](repeating: 0, count: overloaded ? total : 0)
 
     var times = StageTimes()
     var devicePos = 0
@@ -347,35 +355,47 @@ func runHarness(_ o: Options) throws {
 
     for run in 1...runs {
         pipeline.resetForHarness(seed: seed)
-        let inResampler = Resampler(from: deviceRate, to: 16000)
-        var accCount = 0
-        var inputResampleMs = 0.0
+        inputRing.reset()
+        skipped16.value = 0
+        let input = InputAssembler(inputRate: deviceRate, block16: block16, skipped: skipped16)
+        let bufferMs = Double(inputBuffer) / deviceRate * 1000
+        var clockMs = 0.0
+        var nextBufferEndMs = bufferMs
         var b = 0
         var outPos = 0
         devicePos = 0
         let runStart = HostTime.now()
         var totalMs = 0.0
         while b < nBlocks {
-            nextDeviceBuffer()
-            let tr0 = HostTime.now()
-            let m = inResampler.stream(UnsafeBufferPointer(start: tmp, count: inputBuffer), into: tmp16, capacity: tmp16Cap)
-            inputResampleMs += HostTime.ms(from: tr0, to: HostTime.now())
-            (acc + accCount).update(from: tmp16, count: m)
-            accCount += m
+            if overloaded {
+                while nextBufferEndMs <= clockMs {
+                    nextDeviceBuffer()
+                    _ = inputRing.write(tmp, count: inputBuffer)
+                    nextBufferEndMs += bufferMs
+                }
+            } else {
+                nextDeviceBuffer()
+                _ = inputRing.write(tmp, count: inputBuffer)
+            }
+            input.pull(from: inputRing)
+            if overloaded && input.count < block16 && inputRing.available == 0 { clockMs = max(clockMs, nextBufferEndMs) }
 
-            while accCount >= block16 && b < nBlocks {
-                if realtime {
+            while input.count >= block16 && b < nBlocks {
+                input.limitBacklog()
+                if realtime && !overloaded {
                     let wait = Double(b) * blockSec * 1000 - HostTime.ms(from: runStart, to: HostTime.now())
                     if wait > 0 { usleep(useconds_t(wait * 1000)) }
                 }
                 times.reset()
-                times[.inputResample] = inputResampleMs
-                inputResampleMs = 0
+                times[.inputResample] = input.takeResampleMs()
+                if overloaded {
+                    backlogMs[recorded] = Double(inputRing.available) / deviceRate * 1000 + Double(input.count) / 16
+                    virtualStartMs[recorded] = clockMs
+                }
                 let wall0 = HostTime.now()
-                let res = try pipeline.process(UnsafeBufferPointer(start: acc, count: block16), params: params, times: &times)
+                let res = try pipeline.process(input.block, params: params, times: &times)
                 wall[recorded] = HostTime.ms(from: wall0, to: HostTime.now())
-                memmove(acc, acc + block16, (accCount - block16) * MemoryLayout<Float>.size)
-                accCount -= block16
+                input.consumeBlock()
                 totalMs += times[.total]
 
                 let alg = LatencyMath.algorithmicMs(blockF: cfg.blockF, solaF: cfg.solaF, crossfadeF: cfg.crossfadeF,
@@ -397,7 +417,12 @@ func runHarness(_ o: Options) throws {
                     monitor.sample()
                     nextSample = Date().addingTimeInterval(1)
                 }
+                if overloaded {
+                    clockMs += wall[recorded - 1] + times[.inputResample]
+                    if clockMs >= overloadStartMs && clockMs < overloadEndMs { clockMs += overloadExtraMs }
+                }
                 b += 1
+                if overloaded { break }
             }
         }
         let wall = HostTime.ms(from: runStart, to: HostTime.now()) / 1000
@@ -503,6 +528,13 @@ func runHarness(_ o: Options) throws {
         lines[i + 1] += "," + cell(m.inputWaitMs) + "," + cell(m.outputQueueMs) + "," + cell(m.pipelineMs)
     }
     try (lines.joined(separator: "\n") + "\n").write(to: outDir.appendingPathComponent("blocks.csv"), atomically: true, encoding: .utf8)
+
+    if overloaded {
+        var csv = ["block,clock_ms,backlog_ms"]
+        for i in 0..<recorded { csv.append("\(i),\(String(format: "%.1f", virtualStartMs[i])),\(String(format: "%.1f", backlogMs[i]))") }
+        try (csv.joined(separator: "\n") + "\n").write(to: outDir.appendingPathComponent("overload.csv"), atomically: true, encoding: .utf8)
+        print("overload: backlog max \(fmt(backlogMs.max() ?? 0)) ms, end \(fmt(backlogMs[recorded - 1])) ms; skipped \(fmt(Double(skipped16.value) / 16)) ms; ring rejected \(inputRing.dropped) frames")
+    }
 
     if keepAudio {
         // `reference` holds run 1

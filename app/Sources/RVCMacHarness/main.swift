@@ -493,6 +493,7 @@ func runHarness(_ o: Options) throws {
     var counters = Report.Counters()
     counters.blocks = rows.count
     counters.inferredBlocks = rows.filter { $0.flags.inferred }.count
+    counters.skippedInputMs = Double(skipped16.value) / 16
     counters.gatedBlocks = rows.filter { $0.flags.contains(.gated) }.count
     var config = Report.ConfigInfo(compute: compute.rawValue, blockMs: cfg.blockMs, extraMs: cfg.extraMs, crossfadeMs: cfg.crossfadeMs,
                                    inputRate: deviceRate, outputRate: outputRate, pitch: params.pitch,

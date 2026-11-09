@@ -249,7 +249,6 @@ package final class VoiceEngine {
                 usleep(1000)
                 continue
             }
-            input.limitBacklog()
             let swap = swapLock.withLockUnchecked { (s: inout (ModelState, UInt64)?) -> (ModelState, UInt64)? in
                 let v = s
                 s = nil

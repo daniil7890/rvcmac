@@ -381,7 +381,6 @@ func runHarness(_ o: Options) throws {
             if overloaded && input.count < block16 && inputRing.available == 0 { clockMs = max(clockMs, nextBufferEndMs) }
 
             while input.count >= block16 && b < nBlocks {
-                input.limitBacklog()
                 if realtime && !overloaded {
                     let wait = Double(b) * blockSec * 1000 - HostTime.ms(from: runStart, to: HostTime.now())
                     if wait > 0 { usleep(useconds_t(wait * 1000)) }

@@ -63,8 +63,8 @@ final class RecorderTests: XCTestCase {
         XCTAssertTrue(rows[0].endToEndMs.isNaN)
         XCTAssertTrue(rows[2].flags.contains(.gated))
         XCTAssertEqual(r.rows(last: 1).map(\.index), [4])
-        // gated blocks are excluded from stage timings
-        XCTAssertEqual(ReportMath.stageDistributions(rows)[Stage.total.key]?.count, 2)
+        // closed-gate blocks still run the models, so their stage timings count
+        XCTAssertEqual(ReportMath.stageDistributions(rows)[Stage.total.key]?.count, 3)
     }
 
     func testCSVHasHeaderAndRows() {

@@ -16,6 +16,8 @@ usage: rvcmac-harness (--input FILE | --synthetic SECONDS) --voice NAME --block 
   --index X                       index ratio (default 0.5)
   --protect X                     protect (default 0.33)
   --gate DB                       silence gate (default -60, as in the app)
+  --gate-hysteresis DB            gate closes this far below --gate (default 6)
+  --gate-hold MS                  gate hold time (default 200)
   --device-rate HZ                simulated input device rate (default 48000)
   --output-rate HZ                output rate (default 48000)
   --input-buffer FRAMES           simulated input buffer (default 512)
@@ -37,7 +39,7 @@ struct HarnessError: Error, CustomStringConvertible {
 struct Options {
     var values: [String: String] = [:]
     static let known: Set<String> = [
-        "input", "synthetic", "voice", "block", "extra", "crossfade", "compute", "pitch", "index", "protect", "gate",
+        "input", "synthetic", "voice", "block", "extra", "crossfade", "compute", "pitch", "index", "protect", "gate", "gate-hysteresis", "gate-hold",
         "device-rate", "output-rate", "input-buffer", "output-buffer", "runs", "warmup", "pacing", "seed",
         "loop-minutes", "home", "out",
     ]
@@ -244,6 +246,8 @@ func runHarness(_ o: Options) throws {
     params.indexRatio = Float(try o.double("index", 0.5))
     params.protect = Float(try o.double("protect", 0.33))
     params.gateDB = Float(try o.double("gate", -60))
+    params.gateHysteresisDB = Float(try o.double("gate-hysteresis", Double(params.gateHysteresisDB)))
+    params.gateHoldMs = Int(try o.double("gate-hold", Double(params.gateHoldMs)))
     params.bypass = false
 
     let deviceRate = try o.double("device-rate", 48000)

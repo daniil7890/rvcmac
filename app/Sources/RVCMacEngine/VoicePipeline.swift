@@ -5,7 +5,9 @@ import RVCMacCore
 
 package struct EngineParams {
     package var pitch: Int = 0          // semitones
-    package var gateDB: Float = -60     // input gate threshold
+    package var gateDB: Float = -60     // input gate opens at this level
+    package var gateHysteresisDB: Float = 6 // and closes this far below it
+    package var gateHoldMs: Int = 200   // after this long under the closing level
     package var gain: Float = 1.0       // output gain
     package var bypass = false          // pass input straight through (for checking routing)
     package var indexRatio: Float = 0.5 // how much retrieved index features replace the input features
@@ -106,6 +108,8 @@ package final class VoicePipeline {
     private var rng = Gaussian()
     private let bypassResampler: Resampler
     private var switched = false
+    private var gate = NoiseGate()
+    private var gateRamp = 0            // 0 = closed, cfOut = open
 
     /// Output of the last `process` call: `outCount` samples at `outRate`.
     package private(set) var out: [Float]
@@ -142,6 +146,8 @@ package final class VoicePipeline {
     package func reset() {
         for i in 0..<win.count { win[i] = 0 }
         for i in 0..<solaBuffer.count { solaBuffer[i] = 0 }
+        gate.reset()
+        gateRamp = 0
         outCount = 0
     }
 
@@ -196,15 +202,16 @@ package final class VoicePipeline {
             times[.output] = msSince(t)
             times[.total] = msSince(tBlock)
             flags.insert(.bypass)
+            gate.reset()    // leaving bypass always goes through the ramp
+            gateRamp = 0
             return (db, flags)
         }
-        if db < p.gateDB {
-            for i in 0..<blockOut { out[i] = 0 }
-            outCount = blockOut
-            times[.total] = msSince(tBlock)
-            flags.insert(.gated)
-            return (db, flags)
-        }
+        // Closed-gate blocks still run the models: every block costs the same, which keeps the output queue
+        // steady, and SOLA always has a current tail to crossfade from.
+        let blockMs = cfg.blockF * 10
+        let holdBlocks = (p.gateHoldMs + blockMs - 1) / blockMs
+        let gateOpen = gate.update(db: db, threshold: p.gateDB, hysteresisDB: p.gateHysteresisDB, holdBlocks: holdBlocks)
+        if !gateOpen { flags.insert(.gated) }
 
         // 1. ContentVec
         var t = nowNs()
@@ -282,6 +289,7 @@ package final class VoicePipeline {
             seg.withUnsafeMutableBufferPointer { s.outResampler.segment(a, into: $0.baseAddress!, outCount: segOut) }
         }
         sola(gain: p.gain)
+        applyGate(open: gateOpen)
         outCount = blockOut
         times[.output] = msSince(t)
         times[.total] = msSince(tBlock)
@@ -412,10 +420,28 @@ package final class VoicePipeline {
         for i in 0..<blockOut {
             var v = seg[bestOffset + i]
             if i < cfOut { v = v * fadeIn[i] + solaBuffer[i] * fadeOut[i] }
-            out[i] = v * gain
+            out[i] = v.isFinite ? v * gain : 0
         }
-        for i in 0..<cfOut { solaBuffer[i] = seg[bestOffset + blockOut + i] }
+        for i in 0..<cfOut {
+            let v = seg[bestOffset + blockOut + i]
+            solaBuffer[i] = v.isFinite ? v : 0
+        }
         lastOffset = bestOffset
+    }
+
+    /// Ramps the gate over the crossfade length. The ramp carries across blocks, so a crossfade longer than a block works too.
+    private func applyGate(open: Bool) {
+        if cfOut == 0 {
+            if !open { for i in 0..<blockOut { out[i] = 0 } }
+            return
+        }
+        let target = open ? cfOut : 0
+        if gateRamp == cfOut && target == cfOut { return }
+        let step = open ? 1 : -1
+        for i in 0..<blockOut {
+            if gateRamp != target { gateRamp += step }
+            if gateRamp == 0 { out[i] = 0 } else if gateRamp != cfOut { out[i] *= fadeIn[gateRamp] }
+        }
     }
 
     /// Copies any MLMultiArray (float32/float16/double, any strides) into a dense, reused [Float].

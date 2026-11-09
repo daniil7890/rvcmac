@@ -54,13 +54,13 @@ public struct StageTimes: Sendable {
 public struct BlockFlags: OptionSet, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
-    public static let gated = BlockFlags(rawValue: 1)        // below the silence gate: no inference
+    public static let gated = BlockFlags(rawValue: 1)        // gate closed: the models ran, the output is silent
     public static let bypass = BlockFlags(rawValue: 2)       // processing bypassed
     public static let modelSwitch = BlockFlags(rawValue: 4)  // first block after a model switch
     public static let warmup = BlockFlags(rawValue: 8)
 
     /// Only these blocks ran the models, so only they count for stage timings.
-    public var inferred: Bool { !contains(.gated) && !contains(.bypass) }
+    public var inferred: Bool { !contains(.bypass) }
 }
 
 /// One recorded block.

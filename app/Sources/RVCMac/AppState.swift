@@ -287,7 +287,7 @@ final class AppState: ObservableObject {
                 await MainActor.run {
                     var started: EngineSession.Devices?
                     engine.onStats = { s in Task { @MainActor in self.receive(s) } }
-                    engine.onError = { msg in Task { @MainActor in self.fail(msg) } }
+                    engine.onError = { [weak engine] msg in Task { @MainActor in self.fail(msg, from: engine) } }
                     engine.onModelSwitched = { name, ms in
                         Task { @MainActor in self.appendLog(String(format: tr("Голос переключён на %@ за %.0f мс (с ожиданием границы блока)."), name, ms)) }
                     }
@@ -362,8 +362,9 @@ final class AppState: ObservableObject {
         start()
     }
 
-    private func fail(_ msg: String) {
+    private func fail(_ msg: String, from source: VoiceEngine?) {
         appendLog(msg)
+        guard EngineSession.isCurrent(source, engine: engine) else { return }   // a late error from a stopped engine
         lastError = msg
         stop()
         status = tr("Остановлено из-за ошибки")
@@ -374,10 +375,10 @@ final class AppState: ObservableObject {
             session.noteDeviceChange()
             return
         }
-        guard let source, source === engine else { return }   // a late event from an engine that has been stopped
+        guard EngineSession.isCurrent(source, engine: engine) else { return }   // a late event from a stopped engine
         switch ev {
         case let .disconnected(name):
-            fail(trf("Устройство «%@» отключилось. Обработка остановлена.", "\(name)"))
+            fail(trf("Устройство «%@» отключилось. Обработка остановлена.", "\(name)"), from: source)
             refreshDevices()
         case let .sampleRateChanged(name):
             appendLog(trf("У «%@» сменилась частота дискретизации — перезапускаю аудио.", "\(name)"))

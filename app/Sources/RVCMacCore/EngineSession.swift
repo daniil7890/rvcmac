@@ -28,6 +28,12 @@ public struct EngineSession: Sendable {
 
     public var isStarting: Bool { current != nil }
 
+    /// Whether a callback comes from the engine now in use. A callback from a released engine has no source.
+    public static func isCurrent(_ source: AnyObject?, engine: AnyObject?) -> Bool {
+        guard let source else { return false }
+        return source === engine
+    }
+
     /// Returns a token for this start, or nil if another start is still running.
     public mutating func begin() -> Token? {
         guard current == nil else { return nil }

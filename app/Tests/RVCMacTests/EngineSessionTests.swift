@@ -79,6 +79,17 @@ final class EngineSessionTests: XCTestCase {
         XCTAssertFalse(s.finish(t, started: a, current: b))
     }
 
+    func testOnlyTheEngineInUseIsCurrent() {
+        final class Engine {}
+        let inUse = Engine()
+        let stopped = Engine()
+        XCTAssertTrue(EngineSession.isCurrent(inUse, engine: inUse))
+        XCTAssertFalse(EngineSession.isCurrent(stopped, engine: inUse))
+        XCTAssertFalse(EngineSession.isCurrent(stopped, engine: nil))
+        XCTAssertFalse(EngineSession.isCurrent(nil, engine: inUse))
+        XCTAssertFalse(EngineSession.isCurrent(nil, engine: nil))
+    }
+
     func testStaleTokenCannotEndANewerStart() {
         var s = EngineSession()
         let old = s.begin()!

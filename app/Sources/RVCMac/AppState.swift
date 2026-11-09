@@ -122,6 +122,7 @@ final class AppState: ObservableObject {
     // status
     @Published var running = false
     @Published var busy = false
+    private var session = EngineSession()
     @Published var status = tr("Остановлено")
     @Published var lastError: String?
     @Published var stats = EngineStats()
@@ -260,6 +261,7 @@ final class AppState: ObservableObject {
             appendLog(trf("Вход и выход — одно виртуальное устройство (%@): звук пойдёт по кругу. Выбери физический микрофон.", "\(input.name)"))
             return
         }
+        guard let token = session.begin() else { return }
         busy = true
         lastError = nil
         status = tr("Загрузка моделей (первый раз Neural Engine компилирует их до минуты)…")
@@ -269,9 +271,9 @@ final class AppState: ObservableObject {
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
             guard granted else {
                 await MainActor.run {
-                    self.busy = false
                     self.status = tr("Нет доступа к микрофону")
                     self.appendLog(tr("Разреши микрофон: Системные настройки → Конфиденциальность → Микрофон → RVCMac."))
+                    self.finishStart(token, started: nil)
                 }
                 return
             }
@@ -283,17 +285,20 @@ final class AppState: ObservableObject {
                 await MainActor.run { self.status = tr("Прогрев моделей…") }
                 let warmMs = try engine.prepare(outputRate: AudioDevices.sampleRate(output.id))
                 await MainActor.run {
+                    var started: EngineSession.Devices?
                     engine.onStats = { s in Task { @MainActor in self.receive(s) } }
                     engine.onError = { msg in Task { @MainActor in self.fail(msg) } }
                     engine.onModelSwitched = { name, ms in
                         Task { @MainActor in self.appendLog(String(format: tr("Голос переключён на %@ за %.0f мс (с ожиданием границы блока)."), name, ms)) }
                     }
-                    engine.io.onDeviceEvent = { ev in Task { @MainActor in self.deviceEvent(ev) } }
+                    engine.io.onDeviceEvent = { [weak engine] ev in Task { @MainActor in self.deviceEvent(ev, from: engine) } }
                     self.engine = engine
                     self.pushParams()
                     self.pushMute()
                     do {
                         try engine.start(input: input.id, output: output.id)
+                        started = EngineSession.Devices(inputUID: input.uid, outputUID: output.uid,
+                                                        inputRate: engine.io.inputRate, outputRate: engine.io.outputRate)
                         self.running = true
                         self.sessionInput = input.name
                         self.sessionOutput = output.name
@@ -310,17 +315,34 @@ final class AppState: ObservableObject {
                         self.lastError = error.localizedDescription
                         self.appendLog(trf("Аудио: %@", "\(error.localizedDescription)"))
                     }
-                    self.busy = false
+                    self.finishStart(token, started: started)
                 }
             } catch {
                 await MainActor.run {
-                    self.busy = false
                     self.status = tr("Ошибка загрузки модели")
                     self.lastError = error.localizedDescription
                     self.appendLog(trf("Модель: %@", "\(error.localizedDescription)"))
+                    self.finishStart(token, started: nil)
                 }
             }
         }
+    }
+
+    private func finishStart(_ token: EngineSession.Token, started: EngineSession.Devices?) {
+        busy = false
+        if session.finish(token, started: started, current: selectedDevices()) {
+            appendLog(tr("Устройства изменились во время загрузки — перезапускаю аудио."))
+            restart()
+        }
+    }
+
+    /// The selected devices at their current rates (0 if a device is gone).
+    private func selectedDevices() -> EngineSession.Devices {
+        let input = inputs.first { $0.uid == inputUID }
+        let output = outputs.first { $0.uid == outputUID }
+        return EngineSession.Devices(inputUID: inputUID, outputUID: outputUID,
+                                     inputRate: input.map { AudioDevices.sampleRate($0.id) } ?? 0,
+                                     outputRate: output.map { AudioDevices.sampleRate($0.id) } ?? 0)
     }
 
     func stop() {
@@ -347,7 +369,12 @@ final class AppState: ObservableObject {
         status = tr("Остановлено из-за ошибки")
     }
 
-    private func deviceEvent(_ ev: DeviceEvent) {
+    private func deviceEvent(_ ev: DeviceEvent, from source: VoiceEngine?) {
+        if session.isStarting {
+            session.noteDeviceChange()
+            return
+        }
+        guard let source, source === engine else { return }   // a late event from an engine that has been stopped
         switch ev {
         case let .disconnected(name):
             fail(trf("Устройство «%@» отключилось. Обработка остановлена.", "\(name)"))

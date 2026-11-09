@@ -363,6 +363,8 @@ public enum Loc {
             "The model is not built for these settings yet (or was built by an older version).",
         "Собрать":
             "Build",
+        "Устройства изменились во время загрузки — перезапускаю аудио.":
+            "Devices changed while loading, restarting audio.",
         "Вычисления":
             "Compute",
         "Аудио":

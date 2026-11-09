@@ -33,6 +33,12 @@ let package = Package(
                 .linkedFramework("Carbon"),
             ]
         ),
+        // Offline harness: the live pipeline on a file, without an audio device (docs/AUDIT_030.md, section 11).
+        .executableTarget(
+            name: "rvcmac-harness",
+            dependencies: ["RVCMacCore", "RVCMacEngine"],
+            path: "Sources/RVCMacHarness"
+        ),
         .testTarget(
             name: "RVCMacTests",
             dependencies: ["RVCMacRT", "RVCMacCore"],

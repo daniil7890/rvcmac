@@ -26,3 +26,7 @@ dist/
 reports/
 profiles.json
 runtime/
+
+models/
+venv/
+TestAudio/

@@ -3,20 +3,21 @@ import CoreML
 import Foundation
 import RVCMacCore
 
-struct EngineParams {
-    var pitch: Int = 0          // semitones
-    var gateDB: Float = -60     // input gate threshold
-    var gain: Float = 1.0       // output gain
-    var bypass = false          // pass input straight through (for checking routing)
-    var indexRatio: Float = 0.5 // how much retrieved index features replace the input features
-    var protect: Float = 0.33   // keep original features on unvoiced frames (0.5 = off)
+package struct EngineParams {
+    package var pitch: Int = 0          // semitones
+    package var gateDB: Float = -60     // input gate threshold
+    package var gain: Float = 1.0       // output gain
+    package var bypass = false          // pass input straight through (for checking routing)
+    package var indexRatio: Float = 0.5 // how much retrieved index features replace the input features
+    package var protect: Float = 0.33   // keep original features on unvoiced frames (0.5 = off)
+    package init() {}
 }
 
 /// Fast gaussian noise (xorshift + Box-Muller).
-struct Gaussian {
+package struct Gaussian {
     private var state: UInt64 = 0x9E3779B97F4A7C15
     private var spare: Float?
-    mutating func next() -> Float {
+    package mutating func next() -> Float {
         if let s = spare { spare = nil; return s }
         var u1: Float = 0
         repeat { u1 = uniform() } while u1 <= 1e-7
@@ -37,25 +38,25 @@ struct Gaussian {
 
 /// One voice ready to run: Core ML models plus their reusable inputs, feature providers and scratch buffers.
 /// Built off the worker thread, so a model switch only swaps a reference.
-final class ModelState {
-    let model: LoadedVoice
-    let audioArray: MLMultiArray
-    let pitchArray: MLMultiArray
-    let noiseArray: MLMultiArray
-    let sineArray: MLMultiArray
-    let phoneArray: MLMultiArray
-    let audioInput: MLFeatureProvider
-    let synthInput: MLFeatureProvider
-    let centTable: [Float]
-    let outResampler: Resampler
+package final class ModelState {
+    package let model: LoadedVoice
+    package let audioArray: MLMultiArray
+    package let pitchArray: MLMultiArray
+    package let noiseArray: MLMultiArray
+    package let sineArray: MLMultiArray
+    package let phoneArray: MLMultiArray
+    package let audioInput: MLFeatureProvider
+    package let synthInput: MLFeatureProvider
+    package let centTable: [Float]
+    package let outResampler: Resampler
     // scratch
-    var dots: [Float] = []
-    var phone: [Float] = []
-    var latent: [Float] = []
-    var audio: [Float] = []
-    var mixed: [Float] = []
+    package var dots: [Float] = []
+    package var phone: [Float] = []
+    package var latent: [Float] = []
+    package var audio: [Float] = []
+    package var mixed: [Float] = []
 
-    init(model: LoadedVoice, outRate: Double) throws {
+    package init(model: LoadedVoice, outRate: Double) throws {
         self.model = model
         let cfg = model.config
         audioArray = try MLMultiArray(shape: [1, NSNumber(value: cfg.N)], dataType: .float32)
@@ -76,16 +77,16 @@ final class ModelState {
 
 /// The DSP chain for one block, without any audio I/O. Used by the live engine and the file benchmark.
 /// The maths is the same as before the telemetry work; only allocations were removed.
-final class VoicePipeline {
-    let cfg: LatencyConfig
-    let outRate: Double
-    private(set) var state: ModelState
-    let block16: Int
-    let window: Int
-    let blockOut: Int
-    let cfOut: Int
-    let searchOut: Int
-    let segOut: Int
+package final class VoicePipeline {
+    package let cfg: LatencyConfig
+    package let outRate: Double
+    package private(set) var state: ModelState
+    package let block16: Int
+    package let window: Int
+    package let blockOut: Int
+    package let cfOut: Int
+    package let searchOut: Int
+    package let segOut: Int
 
     private var win: [Float]
     private var solaBuffer: [Float]
@@ -98,11 +99,11 @@ final class VoicePipeline {
     private var switched = false
 
     /// Output of the last `process` call: `outCount` samples at `outRate`.
-    private(set) var out: [Float]
-    private(set) var outCount = 0
-    private(set) var lastOffset = 0
+    package private(set) var out: [Float]
+    package private(set) var outCount = 0
+    package private(set) var lastOffset = 0
 
-    init(model: LoadedVoice, outRate: Double) throws {
+    package init(model: LoadedVoice, outRate: Double) throws {
         cfg = model.config
         self.outRate = outRate
         state = try ModelState(model: model, outRate: outRate)
@@ -129,21 +130,21 @@ final class VoicePipeline {
     }
 
     /// Clears the audio history (between benchmark runs).
-    func reset() {
+    package func reset() {
         for i in 0..<win.count { win[i] = 0 }
         for i in 0..<solaBuffer.count { solaBuffer[i] = 0 }
         outCount = 0
     }
 
     /// Takes effect on the next block; the SOLA crossfade blends the old voice into the new one.
-    func replaceModel(_ s: ModelState) {
+    package func replaceModel(_ s: ModelState) {
         precondition(s.model.config.key == cfg.key, "model switch needs the same latency config")
         state = s
         switched = true
     }
 
     /// Processes one block of `block16` samples at 16 kHz into `out`.
-    func process(_ block: UnsafeBufferPointer<Float>, params p: EngineParams, times: inout StageTimes) throws -> (db: Float, flags: BlockFlags) {
+    package func process(_ block: UnsafeBufferPointer<Float>, params p: EngineParams, times: inout StageTimes) throws -> (db: Float, flags: BlockFlags) {
         let tBlock = nowNs()
         var flags: BlockFlags = []
         if switched { flags.insert(.modelSwitch); switched = false }
@@ -395,7 +396,7 @@ final class VoicePipeline {
     }
 
     /// Copies any MLMultiArray (float32/float16/double, any strides) into a dense, reused [Float].
-    static func copy(_ a: MLMultiArray, into out: inout [Float]) {
+    package static func copy(_ a: MLMultiArray, into out: inout [Float]) {
         let n = a.count
         if out.count != n { out = [Float](repeating: 0, count: n) }
         let shape = a.shape.map { $0.intValue }

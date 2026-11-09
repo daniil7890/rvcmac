@@ -1,5 +1,6 @@
 import Charts
 import RVCMacCore
+import RVCMacEngine
 import SwiftUI
 
 // View-local state lives in small ObservableObjects instead of @State: in recent SDKs @State is a

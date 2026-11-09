@@ -1,5 +1,6 @@
 import AppKit
 import RVCMacCore
+import RVCMacEngine
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

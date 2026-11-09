@@ -6,8 +6,8 @@ import RVCMacCore
 
 // MARK: - System and resource probes
 
-enum SystemProbe {
-    static func sysctlString(_ name: String) -> String {
+package enum SystemProbe {
+    package static func sysctlString(_ name: String) -> String {
         var size = 0
         guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return "?" }
         var buf = [CChar](repeating: 0, count: size)
@@ -15,7 +15,7 @@ enum SystemProbe {
         return String(cString: buf)
     }
 
-    static func thermalName(_ s: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) -> String {
+    package static func thermalName(_ s: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) -> String {
         switch s {
         case .nominal: return "nominal"
         case .fair: return "fair"
@@ -25,7 +25,7 @@ enum SystemProbe {
         }
     }
 
-    static func info(thermalStart: String) -> Report.SystemInfo {
+    package static func info(thermalStart: String) -> Report.SystemInfo {
         let v = ProcessInfo.processInfo.operatingSystemVersion
         return Report.SystemInfo(macOS: "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)",
                                  machine: sysctlString("hw.model"),
@@ -35,12 +35,12 @@ enum SystemProbe {
                                  lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled)
     }
 
-    static var appVersion: String {
+    package static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
 
     /// Physical footprint of this process (what Activity Monitor shows as "Memory").
-    static func memoryMB() -> Double {
+    package static func memoryMB() -> Double {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
         let kr = withUnsafeMutablePointer(to: &info) {
@@ -52,7 +52,7 @@ enum SystemProbe {
     }
 
     /// User + system CPU time of this process, seconds.
-    static func cpuSeconds() -> Double {
+    package static func cpuSeconds() -> Double {
         var u = rusage()
         getrusage(RUSAGE_SELF, &u)
         func s(_ t: timeval) -> Double { Double(t.tv_sec) + Double(t.tv_usec) / 1e6 }
@@ -60,29 +60,34 @@ enum SystemProbe {
     }
 
     /// Public APIs give no reliable per-process GPU / Neural Engine load, so reports say so instead of guessing.
-    static let gpuAneNote = tr("нет публичного API для нагрузки GPU/ANE процесса; смотри Instruments → Core ML / Metal System Trace")
+    package static let gpuAneNote = tr("нет публичного API для нагрузки GPU/ANE процесса; смотри Instruments → Core ML / Metal System Trace")
 }
 
 /// Samples CPU %, memory and thermal state about once a second.
-final class ResourceMonitor {
-    struct Sample {
-        var cpuPercent: Double
-        var memoryMB: Double
-        var thermal: String
+package final class ResourceMonitor {
+    package struct Sample {
+        package var cpuPercent: Double
+        package var memoryMB: Double
+        package var thermal: String
+        package init(cpuPercent: Double, memoryMB: Double, thermal: String) {
+            self.cpuPercent = cpuPercent; self.memoryMB = memoryMB; self.thermal = thermal
+        }
     }
 
     private var lastCPU = SystemProbe.cpuSeconds()
     private var lastWall = Date()
-    private(set) var samples: [Sample] = []
+    package private(set) var samples: [Sample] = []
 
-    func reset() {
+    package init() {}
+
+    package func reset() {
         samples.removeAll()
         lastCPU = SystemProbe.cpuSeconds()
         lastWall = Date()
     }
 
     @discardableResult
-    func sample() -> Sample {
+    package func sample() -> Sample {
         let cpu = SystemProbe.cpuSeconds()
         let now = Date()
         let dt = now.timeIntervalSince(lastWall)
@@ -95,7 +100,7 @@ final class ResourceMonitor {
         return s
     }
 
-    var summary: Report.Resources {
+    package var summary: Report.Resources {
         var thermal: [String: Int] = [:]
         for s in samples { thermal[s.thermal, default: 0] += 1 }
         return Report.Resources(cpuPercent: Distribution.of(samples.map(\.cpuPercent)),
@@ -106,23 +111,23 @@ final class ResourceMonitor {
 
 // MARK: - Reports on disk
 
-enum ReportStore {
-    static var directory: URL { RVCMacPaths.home.appendingPathComponent("reports") }
+package enum ReportStore {
+    package static var directory: URL { RVCMacPaths.home.appendingPathComponent("reports") }
 
-    static func stamp(_ d: Date = Date()) -> String {
+    package static func stamp(_ d: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd-HHmmss"
         return f.string(from: d)
     }
 
-    static func safe(_ s: String) -> String {
+    package static func safe(_ s: String) -> String {
         String(s.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "_" })
     }
 
     /// Writes `<base>.json` and `<base>.csv` (+ `<base>.wav` when audio is given). Returns the JSON URL.
     @discardableResult
-    static func save(_ report: Report, rows: [BlockRow], audio: [Float]? = nil, sampleRate: Double = 48000) throws -> URL {
+    package static func save(_ report: Report, rows: [BlockRow], audio: [Float]? = nil, sampleRate: Double = 48000) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let base = "\(report.kind == .live ? "live" : "bench")-\(stamp(report.createdAt))-\(safe(report.model.name))-b\(report.config.blockMs)"
         let json = directory.appendingPathComponent(base + ".json")
@@ -134,16 +139,16 @@ enum ReportStore {
         return json
     }
 
-    static func list() -> [URL] {
+    package static func list() -> [URL] {
         let items = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
         return items.filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent > $1.lastPathComponent }
     }
 
-    static func load(_ url: URL) throws -> Report {
+    package static func load(_ url: URL) throws -> Report {
         try ReportMath.decoder().decode(Report.self, from: Data(contentsOf: url))
     }
 
-    static func writeWAV(_ samples: [Float], rate: Double, to url: URL) throws {
+    package static func writeWAV(_ samples: [Float], rate: Double, to url: URL) throws {
         let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
         let file = try AVAudioFile(forWriting: url, settings: fmt.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
@@ -155,26 +160,27 @@ enum ReportStore {
 
 // MARK: - File benchmark
 
-struct BenchmarkOptions {
-    var sourceURL: URL?
-    var runs = 3
-    var warmupBlocks = 10
+package struct BenchmarkOptions {
+    package var sourceURL: URL?
+    package var runs = 3
+    package var warmupBlocks = 10
     /// Feed blocks at real-time intervals (like the live engine) instead of back to back.
-    var realtimePacing = true
-    var saveOutput = true
-    var outputRate = 48000.0
-    var maxSeconds = 120.0
+    package var realtimePacing = true
+    package var saveOutput = true
+    package var outputRate = 48000.0
+    package var maxSeconds = 120.0
+    package init() {}
 }
 
-struct BenchmarkResult {
-    var report: Report
-    var rows: [BlockRow]
-    var output: [Float]
+package struct BenchmarkResult {
+    package var report: Report
+    package var rows: [BlockRow]
+    package var output: [Float]
 }
 
-enum BenchmarkError: LocalizedError {
+package enum BenchmarkError: LocalizedError {
     case tooShort, cancelled
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .tooShort: return tr("Аудиофайл слишком короткий для этого размера блока")
         case .cancelled: return tr("Бенчмарк остановлен")
@@ -182,9 +188,9 @@ enum BenchmarkError: LocalizedError {
     }
 }
 
-enum BenchmarkRunner {
+package enum BenchmarkRunner {
     /// Mono 16 kHz audio from any file AVAudioFile can read (wav, aiff, m4a, mp3, caf...).
-    static func loadAudio16k(_ url: URL, maxSeconds: Double) throws -> [Float] {
+    package static func loadAudio16k(_ url: URL, maxSeconds: Double) throws -> [Float] {
         let f = try AVAudioFile(forReading: url)
         let fmt = f.processingFormat
         let frames = AVAudioFrameCount(min(Double(f.length), maxSeconds * fmt.sampleRate))
@@ -201,7 +207,7 @@ enum BenchmarkRunner {
 
     /// Deterministic voice-like test signal: harmonic tone with gliding pitch, vibrato and pauses.
     /// Good for timing; use a real recording to judge sound quality.
-    static func syntheticVoice(seconds: Double = 20) -> [Float] {
+    package static func syntheticVoice(seconds: Double = 20) -> [Float] {
         let sr = 16000.0
         let n = Int(seconds * sr)
         var out = [Float](repeating: 0, count: n)
@@ -220,7 +226,7 @@ enum BenchmarkRunner {
         return out
     }
 
-    static func run(voice: VoiceInfo, config cfg: LatencyConfig, compute: ComputeChoice, params: EngineParams,
+    package static func run(voice: VoiceInfo, config cfg: LatencyConfig, compute: ComputeChoice, params: EngineParams,
                     options: BenchmarkOptions, progress: (String) -> Void, isCancelled: () -> Bool) throws -> BenchmarkResult {
         let thermalStart = SystemProbe.thermalName()
         let monitor = ResourceMonitor()

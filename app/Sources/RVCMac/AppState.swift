@@ -4,23 +4,8 @@ import CoreAudio
 import CoreML
 import Foundation
 import RVCMacCore
+import RVCMacEngine
 import SwiftUI
-
-enum ComputeChoice: String, CaseIterable, Identifiable {
-    case neuralEngine = "Neural Engine + GPU"
-    case aneOnly = "Neural Engine"
-    case gpu = "GPU"
-    case cpu = "CPU"
-    var id: String { rawValue }
-    var units: MLComputeUnits {
-        switch self {
-        case .neuralEngine: return .all
-        case .aneOnly: return .cpuAndNeuralEngine
-        case .gpu: return .cpuAndGPU
-        case .cpu: return .cpuOnly
-        }
-    }
-}
 
 struct ChartPoint: Identifiable {
     let id: Int

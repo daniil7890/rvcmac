@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import Foundation
 import RVCMacCore
+import RVCMacEngine
 
 enum HotkeyAction: String, CaseIterable, Codable, Identifiable {
     case toggleRun, mute, bypass, pushToTalk, nextProfile

@@ -3,62 +3,62 @@ import CoreML
 import Foundation
 import RVCMacCore
 
-struct LatencyConfig: Codable, Hashable {
-    let key: String
-    let blockMs: Int
-    let extraMs: Int
-    let crossfadeMs: Int
-    let blockF: Int
-    let extraF: Int
-    let crossfadeF: Int
-    let solaF: Int
-    let F: Int
-    let skip: Int
-    let R: Int
-    let flowHead: Int
-    let decHead: Int
-    let N: Int
-    let E: Int
-    let synth: String
-    let shared: String
+package struct LatencyConfig: Codable, Hashable {
+    package let key: String
+    package let blockMs: Int
+    package let extraMs: Int
+    package let crossfadeMs: Int
+    package let blockF: Int
+    package let extraF: Int
+    package let crossfadeF: Int
+    package let solaF: Int
+    package let F: Int
+    package let skip: Int
+    package let R: Int
+    package let flowHead: Int
+    package let decHead: Int
+    package let N: Int
+    package let E: Int
+    package let synth: String
+    package let shared: String
     /// Present for synth models that take features already upscaled to F frames (index-capable).
-    let phoneFrames: Int?
+    package let phoneFrames: Int?
 
-    static func key(block: Int, extra: Int, crossfade: Int) -> String { "b\(block)_e\(extra)_c\(crossfade)" }
+    package static func key(block: Int, extra: Int, crossfade: Int) -> String { "b\(block)_e\(extra)_c\(crossfade)" }
 }
 
-struct IndexInfo: Codable, Hashable {
-    let file: String
-    let count: Int
-    let dim: Int
+package struct IndexInfo: Codable, Hashable {
+    package let file: String
+    package let count: Int
+    package let dim: Int
 }
 
-struct VoiceInfo: Codable, Hashable {
-    let name: String
-    let version: String
-    let sr: Int
-    let embChannels: Int
-    let embOutput: String
-    let interChannels: Int?
-    let upp: Int?
-    let configs: [String: LatencyConfig]
-    let index: IndexInfo?
+package struct VoiceInfo: Codable, Hashable {
+    package let name: String
+    package let version: String
+    package let sr: Int
+    package let embChannels: Int
+    package let embOutput: String
+    package let interChannels: Int?
+    package let upp: Int?
+    package let configs: [String: LatencyConfig]
+    package let index: IndexInfo?
 }
 
-struct FcpeMeta: Codable {
-    let f0Min: Double
-    let f0Max: Double
-    let outDims: Int
-    let frames: Int
-    let threshold: Double
+package struct FcpeMeta: Codable {
+    package let f0Min: Double
+    package let f0Max: Double
+    package let outDims: Int
+    package let frames: Int
+    package let threshold: Double
 }
 
-enum RVCMacPaths {
+package enum RVCMacPaths {
     /// Where voices, the converter environment, reports and settings files live:
     /// 1. Info.plist key RVCMacHome (local developer builds point it at the checkout),
     /// 2. ~/projects/rvcmac when it already holds voices from an older version (kept as is, nothing is moved),
     /// 3. otherwise ~/Library/Application Support/RVCMac.
-    static let home: URL = {
+    package static let home: URL = {
         let fm = FileManager.default
         if let s = Bundle.main.object(forInfoDictionaryKey: "RVCMacHome") as? String, !s.isEmpty {
             return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
@@ -71,27 +71,27 @@ enum RVCMacPaths {
         try? fm.createDirectory(at: support, withIntermediateDirectories: true)
         return support
     }()
-    static var models: URL { home.appendingPathComponent("models") }
-    static var python: URL { home.appendingPathComponent("venv/bin/python") }
+    package static var models: URL { home.appendingPathComponent("models") }
+    package static var python: URL { home.appendingPathComponent("venv/bin/python") }
 
     /// The converter scripts: a checkout's own copy when present (development), otherwise the one inside the app.
-    static var converterDir: URL {
+    package static var converterDir: URL {
         let local = home.appendingPathComponent("converter")
         if FileManager.default.fileExists(atPath: local.appendingPathComponent("convert.py").path) { return local }
         return Bundle.main.resourceURL?.appendingPathComponent("converter") ?? local
     }
-    static var converter: URL { converterDir.appendingPathComponent("convert.py") }
-    static var requirements: URL { converterDir.appendingPathComponent("requirements.txt") }
+    package static var converter: URL { converterDir.appendingPathComponent("convert.py") }
+    package static var requirements: URL { converterDir.appendingPathComponent("requirements.txt") }
 }
 
-enum ModelLibrary {
-    static func decoder() -> JSONDecoder {
+package enum ModelLibrary {
+    package static func decoder() -> JSONDecoder {
         let d = JSONDecoder()
         d.keyDecodingStrategy = .convertFromSnakeCase
         return d
     }
 
-    static func voices() -> [VoiceInfo] {
+    package static func voices() -> [VoiceInfo] {
         let dir = RVCMacPaths.models.appendingPathComponent("voices")
         guard let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return [] }
         return items.compactMap { url in
@@ -100,13 +100,13 @@ enum ModelLibrary {
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    static func voiceDir(_ v: VoiceInfo) -> URL {
+    package static func voiceDir(_ v: VoiceInfo) -> URL {
         RVCMacPaths.models.appendingPathComponent("voices").appendingPathComponent(v.name)
     }
 
     /// Problems that would make a voice fail to load, in plain words (empty = looks fine).
     /// Only checks files and sizes; nothing from the model is executed.
-    static func validate(_ v: VoiceInfo) -> [String] {
+    package static func validate(_ v: VoiceInfo) -> [String] {
         let fm = FileManager.default
         var issues: [String] = []
         let dir = voiceDir(v)
@@ -159,20 +159,20 @@ enum ModelLibrary {
 }
 
 /// Everything needed to run one voice at one latency config.
-final class LoadedVoice {
-    let voice: VoiceInfo
-    let config: LatencyConfig
-    let fcpe: FcpeMeta
-    let embedder: MLModel
-    let pitchModel: MLModel
-    let synth: MLModel
-    let upp: Int
-    let interChannels: Int
+package final class LoadedVoice {
+    package let voice: VoiceInfo
+    package let config: LatencyConfig
+    package let fcpe: FcpeMeta
+    package let embedder: MLModel
+    package let pitchModel: MLModel
+    package let synth: MLModel
+    package let upp: Int
+    package let interChannels: Int
     /// Index vectors [count x dim] and their squared norms (nil when the voice has no index).
-    let indexVectors: [Float]?
-    let indexNorms: [Float]?
+    package let indexVectors: [Float]?
+    package let indexNorms: [Float]?
 
-    init(voice: VoiceInfo, config: LatencyConfig, units: MLComputeUnits) throws {
+    package init(voice: VoiceInfo, config: LatencyConfig, units: MLComputeUnits) throws {
         self.voice = voice
         self.config = config
         let shared = RVCMacPaths.models.appendingPathComponent(config.shared)

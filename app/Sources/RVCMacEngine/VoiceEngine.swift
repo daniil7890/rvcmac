@@ -5,23 +5,24 @@ import os
 import RVCMacCore
 
 /// What the UI shows while running. Distributions cover a recent window (last 64 blocks).
-struct EngineStats {
-    var processMs: Double = 0           // slowest block in the last report period
-    var blockMs: Double = 0
-    var inputDB: Float = -120
-    var gated = false
-    var stageP50 = [Double](repeating: 0, count: Stage.allCases.count)
-    var stageP95 = [Double](repeating: 0, count: Stage.allCases.count)
-    var pipeline = Distribution.empty
-    var endToEnd = Distribution.empty
-    var algorithmicMs: Double = 0
-    var deviceInputMs: Double = 0
-    var deviceOutputMs: Double = 0
-    var outputQueueMs: Double = 0
-    var counters = Report.Counters()
-    var overloads = 0
-    var inputBufferFrames = 0
-    var outputBufferFrames = 0
+package struct EngineStats {
+    package var processMs: Double = 0           // slowest block in the last report period
+    package var blockMs: Double = 0
+    package var inputDB: Float = -120
+    package var gated = false
+    package var stageP50 = [Double](repeating: 0, count: Stage.allCases.count)
+    package var stageP95 = [Double](repeating: 0, count: Stage.allCases.count)
+    package var pipeline = Distribution.empty
+    package var endToEnd = Distribution.empty
+    package var algorithmicMs: Double = 0
+    package var deviceInputMs: Double = 0
+    package var deviceOutputMs: Double = 0
+    package var outputQueueMs: Double = 0
+    package var counters = Report.Counters()
+    package var overloads = 0
+    package var inputBufferFrames = 0
+    package var outputBufferFrames = 0
+    package init() {}
 }
 
 /// Fixed-size ring of recent values for cheap rolling percentiles on the worker thread.
@@ -40,8 +41,8 @@ private struct RecentWindow {
 }
 
 /// Live engine: Core Audio I/O + a worker thread that runs `VoicePipeline` block by block and measures it.
-final class VoiceEngine {
-    let io = AudioIO()
+package final class VoiceEngine {
+    package let io = AudioIO()
     private let modelLock = OSAllocatedUnfairLock()
     private var activeModel: LoadedVoice
     private var thread: Thread?
@@ -56,28 +57,28 @@ final class VoiceEngine {
     private let outputOverflow = AtomicInt(0)
     private let skipped16 = AtomicInt(0)
     private let modelSwitches = AtomicInt(0)
-    private(set) var sessionStarted = Date()
+    package private(set) var sessionStarted = Date()
 
     /// Worker thread callbacks; the receiver hops to the main actor itself.
-    var onStats: ((EngineStats) -> Void)?
-    var onError: ((String) -> Void)?
-    var onModelSwitched: ((String, Double) -> Void)?
+    package var onStats: ((EngineStats) -> Void)?
+    package var onError: ((String) -> Void)?
+    package var onModelSwitched: ((String, Double) -> Void)?
 
-    init(model: LoadedVoice) {
+    package init(model: LoadedVoice) {
         activeModel = model
     }
 
-    var params: EngineParams {
+    package var params: EngineParams {
         get { paramsLock.withLock { $0 } }
         set { paramsLock.withLock { $0 = newValue } }
     }
 
-    var muted: Bool {
+    package var muted: Bool {
         get { io.muted.value != 0 }
         set { io.muted.value = newValue ? 1 : 0 }
     }
 
-    var currentModel: LoadedVoice { modelLock.withLockUnchecked { activeModel } }
+    package var currentModel: LoadedVoice { modelLock.withLockUnchecked { activeModel } }
 
     private var isRunning: Bool { running.withLock { $0 } }
 
@@ -87,7 +88,7 @@ final class VoiceEngine {
     /// Without this the first, slow (cold Neural Engine) blocks let input pile up; the backlog then sits in the
     /// output queue as permanent extra latency. Returns the warm-up time in ms.
     @discardableResult
-    func prepare(outputRate: Double, blocks: Int = 3) throws -> Double {
+    package func prepare(outputRate: Double, blocks: Int = 3) throws -> Double {
         let t0 = HostTime.now()
         let pipeline = try VoicePipeline(model: currentModel, outRate: outputRate)
         var p = params
@@ -103,7 +104,7 @@ final class VoiceEngine {
         return HostTime.ms(from: t0, to: HostTime.now())
     }
 
-    func start(input: AudioDeviceID, output: AudioDeviceID) throws {
+    package func start(input: AudioDeviceID, output: AudioDeviceID) throws {
         stop()
         try io.start(input: input, output: output)
         let pipeline: VoicePipeline
@@ -140,7 +141,7 @@ final class VoiceEngine {
         t.start()
     }
 
-    func stop() {
+    package func stop() {
         running.withLock { $0 = false }
         if threadActive {
             // the worker finishes its current block (at most one inference) and exits
@@ -155,7 +156,7 @@ final class VoiceEngine {
 
     /// Prepares the new voice off the worker thread (call from a background task), then hands it over.
     /// The active voice keeps playing until the worker switches at the next block boundary.
-    func switchModel(to model: LoadedVoice) throws {
+    package func switchModel(to model: LoadedVoice) throws {
         guard model.config.key == currentModel.config.key else {
             throw NSError(domain: "RVCMac", code: 20, userInfo: [NSLocalizedDescriptionKey: tr("Переключение на лету требует одинаковых настроек задержки")])
         }
@@ -165,9 +166,9 @@ final class VoiceEngine {
 
     // MARK: - Session data
 
-    func sessionRows() -> [BlockRow] { recorderLock.withLockUnchecked { recorder.rows() } }
+    package func sessionRows() -> [BlockRow] { recorderLock.withLockUnchecked { recorder.rows() } }
 
-    func counters(rows: [BlockRow]) -> Report.Counters {
+    package func counters(rows: [BlockRow]) -> Report.Counters {
         var c = Report.Counters()
         c.blocks = rows.count
         c.inferredBlocks = rows.filter { $0.flags.inferred }.count

@@ -6,69 +6,69 @@ import RVCMacRT
 // MARK: - Swift wrappers over the real-time primitives (see RVCMacRT/rvc_rt.h)
 
 /// Lock-free SPSC float ring with monotonically increasing positions.
-final class SampleRing {
+package final class SampleRing {
     fileprivate let ptr: OpaquePointer
-    init(capacity: Int) { ptr = rvc_ring_create(Int64(capacity))! }
+    package init(capacity: Int) { ptr = rvc_ring_create(Int64(capacity))! }
     deinit { rvc_ring_destroy(ptr) }
 
     @discardableResult
-    func write(_ src: UnsafePointer<Float>, count: Int) -> Int { Int(rvc_ring_write(ptr, src, Int64(count))) }
+    package func write(_ src: UnsafePointer<Float>, count: Int) -> Int { Int(rvc_ring_write(ptr, src, Int64(count))) }
     @discardableResult
-    func read(into dst: UnsafeMutablePointer<Float>, count: Int) -> Int { Int(rvc_ring_read(ptr, dst, Int64(count))) }
+    package func read(into dst: UnsafeMutablePointer<Float>, count: Int) -> Int { Int(rvc_ring_read(ptr, dst, Int64(count))) }
     @discardableResult
-    func skip(_ count: Int) -> Int { Int(rvc_ring_skip(ptr, Int64(count))) }
-    var available: Int { Int(rvc_ring_available(ptr)) }
-    var capacity: Int { Int(rvc_ring_capacity(ptr)) }
-    var writePosition: UInt64 { rvc_ring_write_pos(ptr) }
-    var readPosition: UInt64 { rvc_ring_read_pos(ptr) }
-    var dropped: Int { Int(rvc_ring_dropped(ptr)) }
+    package func skip(_ count: Int) -> Int { Int(rvc_ring_skip(ptr, Int64(count))) }
+    package var available: Int { Int(rvc_ring_available(ptr)) }
+    package var capacity: Int { Int(rvc_ring_capacity(ptr)) }
+    package var writePosition: UInt64 { rvc_ring_write_pos(ptr) }
+    package var readPosition: UInt64 { rvc_ring_read_pos(ptr) }
+    package var dropped: Int { Int(rvc_ring_dropped(ptr)) }
     /// Only while no callback or worker uses the ring.
-    func reset() { rvc_ring_reset(ptr) }
+    package func reset() { rvc_ring_reset(ptr) }
 }
 
 /// Latest (stream position, host time) pair published by an audio callback.
-final class HostClock {
+package final class HostClock {
     fileprivate let ptr: OpaquePointer
-    init() { ptr = rvc_clock_create()! }
+    package init() { ptr = rvc_clock_create()! }
     deinit { rvc_clock_destroy(ptr) }
-    func publish(position: UInt64, hostTime: UInt64) { rvc_clock_publish(ptr, position, hostTime) }
-    func read() -> (position: UInt64, hostTime: UInt64)? {
+    package func publish(position: UInt64, hostTime: UInt64) { rvc_clock_publish(ptr, position, hostTime) }
+    package func read() -> (position: UInt64, hostTime: UInt64)? {
         var p: UInt64 = 0, h: UInt64 = 0
         return rvc_clock_read(ptr, &p, &h) == 1 ? (p, h) : nil
     }
-    func reset() { rvc_clock_reset(ptr) }
+    package func reset() { rvc_clock_reset(ptr) }
 }
 
-final class AtomicInt {
+package final class AtomicInt {
     fileprivate let ptr: OpaquePointer
-    init(_ v: Int = 0) { ptr = rvc_atomic_create(Int64(v))! }
+    package init(_ v: Int = 0) { ptr = rvc_atomic_create(Int64(v))! }
     deinit { rvc_atomic_destroy(ptr) }
-    var value: Int {
+    package var value: Int {
         get { Int(rvc_atomic_load(ptr)) }
         set { rvc_atomic_store(ptr, Int64(newValue)) }
     }
     @discardableResult
-    func add(_ d: Int) -> Int { Int(rvc_atomic_add(ptr, Int64(d))) }
+    package func add(_ d: Int) -> Int { Int(rvc_atomic_add(ptr, Int64(d))) }
 }
 
-enum HostTime {
-    static func now() -> UInt64 { rvc_host_now() }
-    static func ns(_ ticks: UInt64) -> Double { rvc_host_to_ns(ticks) }
-    static func ms(from a: UInt64, to b: UInt64) -> Double { rvc_host_delta_ms(a, b) }
+package enum HostTime {
+    package static func now() -> UInt64 { rvc_host_now() }
+    package static func ns(_ ticks: UInt64) -> Double { rvc_host_to_ns(ticks) }
+    package static func ms(from a: UInt64, to b: UInt64) -> Double { rvc_host_delta_ms(a, b) }
 }
 
 // MARK: - Audio I/O
 
-enum AudioIOError: LocalizedError {
+package enum AudioIOError: LocalizedError {
     case coreAudio(String, OSStatus)
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case let .coreAudio(what, st): return "\(what) failed (OSStatus \(st))"
         }
     }
 }
 
-enum DeviceEvent {
+package enum DeviceEvent {
     case disconnected(String)
     case sampleRateChanged(String)
 }
@@ -82,7 +82,7 @@ private final class OutputCallbackState {
 ///
 /// Real-time rules for both callbacks: no locks, no allocation, no Objective-C/Swift object
 /// lookups, no I/O. They only copy samples, touch atomics and publish timestamps.
-final class AudioIO {
+package final class AudioIO {
     private var inputID: AudioDeviceID = 0
     private var outputID: AudioDeviceID = 0
     private var inputProc: AudioDeviceIOProcID?
@@ -93,36 +93,36 @@ final class AudioIO {
     private var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
 
     /// Captured samples at the input device rate (channel 1).
-    let inputRing = SampleRing(capacity: 192_000 * 2)
+    package let inputRing = SampleRing(capacity: 192_000 * 2)
     /// Processed samples at the output device rate.
-    let outputRing = SampleRing(capacity: 192_000 * 2)
-    let inputClock = HostClock()
-    let outputClock = HostClock()
+    package let outputRing = SampleRing(capacity: 192_000 * 2)
+    package let inputClock = HostClock()
+    package let outputClock = HostClock()
 
     /// Output stays silent until this many samples are queued (prevents stutter at start).
-    let outputPrefill = AtomicInt(0)
+    package let outputPrefill = AtomicInt(0)
     /// The output callback drops the oldest samples when more than this many are queued.
-    let outputMaxFill = AtomicInt(Int.max)
-    let muted = AtomicInt(0)
+    package let outputMaxFill = AtomicInt(Int.max)
+    package let muted = AtomicInt(0)
     private let outputStarted = AtomicInt(0)
 
     // counters (written by callbacks / listeners, read by the worker and UI)
-    let underrunEvents = AtomicInt(0)
-    let underrunFrames = AtomicInt(0)
-    let trimFrames = AtomicInt(0)
-    let trimEvents = AtomicInt(0)
-    let overloads = AtomicInt(0)
-    let truncatedCallbacks = AtomicInt(0)
+    package let underrunEvents = AtomicInt(0)
+    package let underrunFrames = AtomicInt(0)
+    package let trimFrames = AtomicInt(0)
+    package let trimEvents = AtomicInt(0)
+    package let overloads = AtomicInt(0)
+    package let truncatedCallbacks = AtomicInt(0)
 
-    private(set) var inputRate: Double = 48000
-    private(set) var outputRate: Double = 48000
-    private(set) var inputLatencyMs: Double = 0
-    private(set) var outputLatencyMs: Double = 0
-    private(set) var inputBufferFrames = 0
-    private(set) var outputBufferFrames = 0
+    package private(set) var inputRate: Double = 48000
+    package private(set) var outputRate: Double = 48000
+    package private(set) var inputLatencyMs: Double = 0
+    package private(set) var outputLatencyMs: Double = 0
+    package private(set) var inputBufferFrames = 0
+    package private(set) var outputBufferFrames = 0
 
     /// Called on the main queue.
-    var onDeviceEvent: ((DeviceEvent) -> Void)?
+    package var onDeviceEvent: ((DeviceEvent) -> Void)?
 
     deinit {
         stop()
@@ -130,7 +130,7 @@ final class AudioIO {
         scratchOut.deallocate()
     }
 
-    func start(input: AudioDeviceID, output: AudioDeviceID) throws {
+    package func start(input: AudioDeviceID, output: AudioDeviceID) throws {
         stop()
         inputID = input
         outputID = output
@@ -240,7 +240,7 @@ final class AudioIO {
         guard st == noErr else { throw AudioIOError.coreAudio("Start output device", st) }
     }
 
-    func stop() {
+    package func stop() {
         removeListeners()
         if let p = inputProc {
             AudioDeviceStop(inputID, p)

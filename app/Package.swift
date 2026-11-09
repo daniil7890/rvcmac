@@ -15,9 +15,15 @@ let package = Package(
             name: "RVCMacCore",
             path: "Sources/RVCMacCore"
         ),
+        // Audio engine without any UI: shared by the app and the offline harness.
+        .target(
+            name: "RVCMacEngine",
+            dependencies: ["RVCMacRT", "RVCMacCore"],
+            path: "Sources/RVCMacEngine"
+        ),
         .executableTarget(
             name: "RVCMac",
-            dependencies: ["RVCMacRT", "RVCMacCore"],
+            dependencies: ["RVCMacRT", "RVCMacCore", "RVCMacEngine"],
             path: "Sources/RVCMac",
             linkerSettings: [
                 .linkedFramework("CoreAudio"),

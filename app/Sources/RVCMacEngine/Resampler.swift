@@ -3,16 +3,16 @@ import Foundation
 
 /// Mono float32 sample-rate converter built on AVAudioConverter.
 /// PCM buffers are kept between calls and only grow, so steady-state calls do not allocate them.
-final class Resampler {
-    let fromRate: Double
-    let toRate: Double
+package final class Resampler {
+    package let fromRate: Double
+    package let toRate: Double
     private let converter: AVAudioConverter?
     private let inFormat: AVAudioFormat
     private let outFormat: AVAudioFormat
     private var inBuf: AVAudioPCMBuffer?
     private var outBuf: AVAudioPCMBuffer?
 
-    init(from: Double, to: Double) {
+    package init(from: Double, to: Double) {
         fromRate = from
         toRate = to
         inFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: from, channels: 1, interleaved: false)!
@@ -27,7 +27,7 @@ final class Resampler {
     }
 
     /// Upper bound of output samples for `n` input samples.
-    func maxOutput(for n: Int) -> Int { Int(Double(n) * toRate / fromRate) + 256 }
+    package func maxOutput(for n: Int) -> Int { Int(Double(n) * toRate / fromRate) + 256 }
 
     private func input(_ x: UnsafeBufferPointer<Float>) -> AVAudioPCMBuffer? {
         let need = AVAudioFrameCount(max(x.count, 1))
@@ -51,7 +51,7 @@ final class Resampler {
 
     /// Continuous stream conversion (converter state is kept between calls).
     /// Writes at most `capacity` samples to `dst` and returns how many were written.
-    func stream(_ x: UnsafeBufferPointer<Float>, into dst: UnsafeMutablePointer<Float>, capacity: Int) -> Int {
+    package func stream(_ x: UnsafeBufferPointer<Float>, into dst: UnsafeMutablePointer<Float>, capacity: Int) -> Int {
         guard x.count > 0, let base = x.baseAddress else { return 0 }
         guard let converter else {
             let n = min(x.count, capacity)
@@ -76,7 +76,7 @@ final class Resampler {
     }
 
     /// Convenience for non-real-time callers (benchmark file loading).
-    func stream(_ x: [Float]) -> [Float] {
+    package func stream(_ x: [Float]) -> [Float] {
         var out = [Float](repeating: 0, count: maxOutput(for: x.count))
         let n = x.withUnsafeBufferPointer { src in
             out.withUnsafeMutableBufferPointer { stream(src, into: $0.baseAddress!, capacity: $0.count) }
@@ -86,7 +86,7 @@ final class Resampler {
     }
 
     /// Converts an independent segment and writes exactly `outCount` samples to `dst` (zero-padded).
-    func segment(_ x: UnsafeBufferPointer<Float>, into dst: UnsafeMutablePointer<Float>, outCount: Int) {
+    package func segment(_ x: UnsafeBufferPointer<Float>, into dst: UnsafeMutablePointer<Float>, outCount: Int) {
         guard let converter else {
             let n = min(x.count, outCount)
             if n > 0, let b = x.baseAddress { dst.update(from: b, count: n) }

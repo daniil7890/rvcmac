@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import RVCMacCore
+import RVCMacEngine
 
 /// Installs the model converter's Python environment on first use, so the downloaded app needs nothing else.
 ///

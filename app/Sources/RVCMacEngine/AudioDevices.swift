@@ -1,22 +1,22 @@
 import CoreAudio
 import Foundation
 
-struct AudioDevice: Identifiable, Hashable {
-    let id: AudioDeviceID
-    let uid: String
-    let name: String
-    let inputChannels: Int
-    let outputChannels: Int
-    let sampleRate: Double
+package struct AudioDevice: Identifiable, Hashable {
+    package let id: AudioDeviceID
+    package let uid: String
+    package let name: String
+    package let inputChannels: Int
+    package let outputChannels: Int
+    package let sampleRate: Double
 }
 
-enum AudioDevices {
+package enum AudioDevices {
     private static func address(_ selector: AudioObjectPropertySelector,
                                 _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     }
 
-    static func all() -> [AudioDevice] {
+    package static func all() -> [AudioDevice] {
         var addr = address(kAudioHardwarePropertyDevices)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return [] }
@@ -26,7 +26,7 @@ enum AudioDevices {
         return ids.compactMap { device(for: $0) }
     }
 
-    static func device(for id: AudioDeviceID) -> AudioDevice? {
+    package static func device(for id: AudioDeviceID) -> AudioDevice? {
         guard let name = string(id, kAudioObjectPropertyName) else { return nil }
         let uid = string(id, kAudioDevicePropertyDeviceUID) ?? "\(id)"
         return AudioDevice(id: id, uid: uid, name: name,
@@ -35,7 +35,7 @@ enum AudioDevices {
                            sampleRate: sampleRate(id))
     }
 
-    static func defaultDevice(input: Bool) -> AudioDeviceID? {
+    package static func defaultDevice(input: Bool) -> AudioDeviceID? {
         var addr = address(input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice)
         var id: AudioDeviceID = 0
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -43,7 +43,7 @@ enum AudioDevices {
         return st == noErr && id != 0 ? id : nil
     }
 
-    static func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+    package static func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
         var addr = address(selector)
         var value: Unmanaged<CFString>?
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
@@ -54,7 +54,7 @@ enum AudioDevices {
         return v.takeRetainedValue() as String
     }
 
-    static func channels(_ id: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int {
+    package static func channels(_ id: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int {
         var addr = address(kAudioDevicePropertyStreamConfiguration, scope)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0 else { return 0 }
@@ -65,7 +65,7 @@ enum AudioDevices {
         return list.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
-    static func uint32(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
+    package static func uint32(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector,
                        _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> UInt32? {
         var addr = address(selector, scope)
         var v: UInt32 = 0
@@ -76,17 +76,17 @@ enum AudioDevices {
     }
 
     /// Virtual devices (BlackHole, Loopback, aggregate-free drivers) can route output back to input.
-    static func isVirtual(_ id: AudioObjectID) -> Bool {
+    package static func isVirtual(_ id: AudioObjectID) -> Bool {
         uint32(id, kAudioDevicePropertyTransportType) == kAudioDeviceTransportTypeVirtual
     }
 
-    static func isAlive(_ id: AudioObjectID) -> Bool { (uint32(id, kAudioDevicePropertyDeviceIsAlive) ?? 0) != 0 }
+    package static func isAlive(_ id: AudioObjectID) -> Bool { (uint32(id, kAudioDevicePropertyDeviceIsAlive) ?? 0) != 0 }
 
-    static func bufferFrameSize(_ id: AudioObjectID) -> Int { Int(uint32(id, kAudioDevicePropertyBufferFrameSize) ?? 0) }
+    package static func bufferFrameSize(_ id: AudioObjectID) -> Int { Int(uint32(id, kAudioDevicePropertyBufferFrameSize) ?? 0) }
 
     /// Device latency + safety offset + latency of the first stream, in frames, as Core Audio reports them.
     /// The IO buffer itself is not included: the engine measures that part directly from timestamps.
-    static func latencyFrames(_ id: AudioObjectID, input: Bool) -> Int {
+    package static func latencyFrames(_ id: AudioObjectID, input: Bool) -> Int {
         let scope = input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput
         var total = Int(uint32(id, kAudioDevicePropertyLatency, scope) ?? 0)
         total += Int(uint32(id, kAudioDevicePropertySafetyOffset, scope) ?? 0)
@@ -101,7 +101,7 @@ enum AudioDevices {
         return total
     }
 
-    static func sampleRate(_ id: AudioObjectID) -> Double {
+    package static func sampleRate(_ id: AudioObjectID) -> Double {
         var addr = address(kAudioDevicePropertyNominalSampleRate)
         var rate: Float64 = 0
         var size = UInt32(MemoryLayout<Float64>.size)

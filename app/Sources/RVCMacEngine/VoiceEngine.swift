@@ -255,13 +255,23 @@ package final class VoiceEngine {
         var switchRequestedAt: UInt64?
 
         func resolvePending() {
+            // read the clock BEFORE the trim counter: a trim landing between the two reads
+            // would leave a post-trim anchor for pre-trim pending entries (telemetry race)
+            let clock = io.outputClock.read()
             let trims = io.trimEvents.value
-            if trims != lastTrimEvents {
+            let a: (position: UInt64, hostTime: UInt64)
+            switch PendingResolve.decide(clock: clock, trims: trims, lastTrims: lastTrimEvents) {
+            case .wait:
+                return
+            case .discard:
                 // trimmed samples were never played, so their timing is unknown
                 pending.removeAll(keepingCapacity: true)
                 lastTrimEvents = trims
+                return
+            case .resolve(let position, let hostTime):
+                a = (position, hostTime)
             }
-            guard !pending.isEmpty, let a = io.outputClock.read() else { return }
+            guard !pending.isEmpty else { return }
             let anchorNs = HostTime.ns(a.hostTime)
             latencyUpdates.removeAll(keepingCapacity: true)
             for e in pending {

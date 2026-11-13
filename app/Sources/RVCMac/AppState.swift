@@ -347,10 +347,13 @@ final class AppState: ObservableObject {
 
     func stop() {
         if let engine {
+            // take the device figures before stopping: the report must not depend on
+            // io.stop() preserving them (B4)
+            let device = (engine.io.inputRate, engine.io.outputRate, engine.io.inputLatencyMs, engine.io.outputLatencyMs)
             // stop first: the worker is joined, so the report sees every block and nothing
-            // competes for the recorder; io rates and latencies survive io.stop() (B4)
+            // competes for the recorder
             engine.stop()
-            lastSession = makeLiveReport(engine)
+            lastSession = makeLiveReport(engine, device: device)
             if let r = lastSession?.report { appendLog(summaryLine(r)) }
         }
         engine = nil
@@ -553,12 +556,16 @@ final class AppState: ObservableObject {
 
     // MARK: reports
 
-    private func makeLiveReport(_ engine: VoiceEngine) -> (report: Report, rows: [BlockRow]) {
+    /// `device` carries the rates and latencies captured before the engine was stopped;
+    /// nil reads them live (export while running).
+    private func makeLiveReport(_ engine: VoiceEngine,
+                                device: (inputRate: Double, outputRate: Double, inputLatencyMs: Double, outputLatencyMs: Double)? = nil) -> (report: Report, rows: [BlockRow]) {
+        let device = device ?? (engine.io.inputRate, engine.io.outputRate, engine.io.inputLatencyMs, engine.io.outputLatencyMs)
         let rows = engine.sessionRows()
         let model = engine.currentModel
         let cfg = model.config
         var config = Report.ConfigInfo(compute: compute.rawValue, blockMs: cfg.blockMs, extraMs: cfg.extraMs, crossfadeMs: cfg.crossfadeMs,
-                                       inputRate: engine.io.inputRate, outputRate: engine.io.outputRate,
+                                       inputRate: device.inputRate, outputRate: device.outputRate,
                                        pitch: Int(pitch.rounded()), indexRatio: indexRatio, protect: protect, gateDB: gateDB)
         if !anonymizeReports {
             config.inputDevice = sessionInput
@@ -585,7 +592,7 @@ final class AppState: ObservableObject {
                             config: config,
                             coldStart: Report.ColdStart(loadMs: sessionLoadMs, firstBlockMs: rows.first(where: { $0.flags.inferred })?.stages[Stage.total.rawValue] ?? .nan),
                             stages: ReportMath.stageDistributions(rows),
-                            latency: ReportMath.latency(rows, deviceInputMs: engine.io.inputLatencyMs, deviceOutputMs: engine.io.outputLatencyMs),
+                            latency: ReportMath.latency(rows, deviceInputMs: device.inputLatencyMs, deviceOutputMs: device.outputLatencyMs),
                             runs: [run], counters: counters, resources: monitor.summary, notes: notes)
         return (report, rows)
     }

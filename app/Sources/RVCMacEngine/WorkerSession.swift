@@ -14,6 +14,7 @@ package final class WorkerSession {
 
     /// Begins a new session. The previous worker, if any, must already be joined.
     package func begin() -> (token: UInt64, done: DispatchSemaphore) {
+        assert(Thread.isMainThread)
         let done = DispatchSemaphore(value: 0)
         self.done = done
         let token = state.withLock { s -> UInt64 in
@@ -31,6 +32,7 @@ package final class WorkerSession {
 
     /// Asks the worker to exit at the next block boundary.
     package func end() {
+        assert(Thread.isMainThread)
         state.withLock { $0.running = false }
     }
 
@@ -44,6 +46,7 @@ package final class WorkerSession {
     /// let it write into rings that the next start() resets (C2). A worker that never
     /// exits blocks the caller forever, so every worker exit path must signal.
     package func join(timeout: DispatchTimeInterval = .seconds(3), onSlow: () -> Void = {}) {
+        assert(Thread.isMainThread)
         guard let done else { return }
         self.done = nil
         if done.wait(timeout: .now() + timeout) == .timedOut {

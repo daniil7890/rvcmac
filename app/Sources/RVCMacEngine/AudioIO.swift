@@ -240,6 +240,10 @@ package final class AudioIO {
         guard st == noErr else { throw AudioIOError.coreAudio("Start output device", st) }
     }
 
+    /// Stops and destroys both IOProcs and removes the device listeners.
+    /// Contract (B4): the session figures — inputRate/outputRate, inputLatencyMs/outputLatencyMs,
+    /// buffer frame sizes and all counters — are deliberately kept; the live report is built
+    /// after engine.stop() and still reads them. Only start() refreshes them.
     package func stop() {
         removeListeners()
         if let p = inputProc {

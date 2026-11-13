@@ -46,9 +46,7 @@ package final class VoiceEngine {
     private let modelLock = OSAllocatedUnfairLock()
     private var activeModel: LoadedVoice
     private var thread: Thread?
-    private var threadActive = false
-    private let finished = DispatchSemaphore(value: 0)
-    private let running = OSAllocatedUnfairLock(initialState: false)
+    private let session = WorkerSession()
     private let paramsLock = OSAllocatedUnfairLock(initialState: EngineParams())
     private let swapLock = OSAllocatedUnfairLock(uncheckedState: (ModelState, UInt64)?.none)
 
@@ -79,8 +77,6 @@ package final class VoiceEngine {
     }
 
     package var currentModel: LoadedVoice { modelLock.withLockUnchecked { activeModel } }
-
-    private var isRunning: Bool { running.withLock { $0 } }
 
     private var prepared: VoicePipeline?
 
@@ -128,28 +124,24 @@ package final class VoiceEngine {
         recorderLock.withLockUnchecked { recorder.reset() }
         for c in [outputOverflow, skipped16, modelSwitches] { c.value = 0 }
         sessionStarted = Date()
-        running.withLock { $0 = true }
+        let worker = session.begin()
         let inRate = io.inputRate, outRate = io.outputRate
         let t = Thread { [weak self] in
-            guard let self else { return }
-            self.loop(pipeline: pipeline, inRate: inRate, outRate: outRate)
+            // a session that never runs must still signal, or stop() would wait forever
+            guard let self else { worker.done.signal(); return }
+            self.loop(pipeline: pipeline, inRate: inRate, outRate: outRate, token: worker.token, done: worker.done)
         }
         t.qualityOfService = .userInteractive
         t.name = "RVCMac.inference"
         thread = t
-        threadActive = true
         t.start()
     }
 
     package func stop() {
-        running.withLock { $0 = false }
-        if threadActive {
-            // the worker finishes its current block (at most one inference) and exits
-            if finished.wait(timeout: .now() + 3) == .timedOut {
-                onError?(tr("Поток обработки не завершился за 3 с"))
-            }
-            threadActive = false
-        }
+        session.end()
+        // the worker finishes its current block (at most one inference) and exits;
+        // a slow exit is reported, but stop() still joins the worker (C2)
+        session.join { onError?(tr("Поток обработки не завершился за 3 с")) }
         thread = nil
         io.stop()
     }
@@ -192,8 +184,8 @@ package final class VoiceEngine {
         var id: Int
     }
 
-    private func loop(pipeline: VoicePipeline, inRate: Double, outRate: Double) {
-        defer { finished.signal() }
+    private func loop(pipeline: VoicePipeline, inRate: Double, outRate: Double, token: UInt64, done: DispatchSemaphore) {
+        defer { done.signal() }
         let block16 = pipeline.block16
         let input = InputAssembler(inputRate: inRate, block16: block16, skipped: skipped16)
 
@@ -241,7 +233,7 @@ package final class VoiceEngine {
             if pending.count > 64 { pending.removeFirst(pending.count - 64) }
         }
 
-        while isRunning {
+        while session.isCurrent(token) {
             input.pull(from: io.inputRing)
             resolvePending()
 
@@ -268,7 +260,7 @@ package final class VoiceEngine {
                 result = try pipeline.process(input.block, params: p, times: &times)
             } catch {
                 onError?(trf("Ошибка инференса: %@", "\(error.localizedDescription)"))
-                running.withLock { $0 = false }
+                session.end(token: token)
                 break
             }
             let blockEnd16 = input.consumeBlock()

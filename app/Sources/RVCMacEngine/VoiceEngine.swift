@@ -47,6 +47,7 @@ package final class VoiceEngine {
     private var activeModel: LoadedVoice
     private var thread: Thread?
     private let session = WorkerSession()
+    private let releaser = ModelReleaser(label: "RVCMac.modelRelease")
     private let paramsLock = OSAllocatedUnfairLock(initialState: EngineParams())
     private let swapLock = OSAllocatedUnfairLock(uncheckedState: (ModelState, UInt64)?.none)
 
@@ -65,6 +66,18 @@ package final class VoiceEngine {
 
     package init(model: LoadedVoice) {
         activeModel = model
+    }
+
+    deinit {
+        // the engine can be released on any thread; keep model deallocation off it (B5)
+        releaser.release(activeModel)
+        if let prepared { releaser.release(prepared) }
+        let pending = swapLock.withLockUnchecked { s -> ModelState? in
+            let old = s?.0
+            s = nil
+            return old
+        }
+        if let pending { releaser.release(pending) }
     }
 
     package var params: EngineParams {
@@ -93,11 +106,18 @@ package final class VoiceEngine {
         p.bypass = false
         var times = StageTimes()
         let silence = [Float](repeating: 0, count: pipeline.block16)
-        for _ in 0..<blocks {
-            _ = try silence.withUnsafeBufferPointer { try pipeline.process($0, params: p, times: &times) }
+        do {
+            for _ in 0..<blocks {
+                _ = try silence.withUnsafeBufferPointer { try pipeline.process($0, params: p, times: &times) }
+            }
+        } catch {
+            releaser.release(pipeline)   // a failed warm-up must not deinit models on the caller (B5)
+            throw error
         }
         pipeline.reset()
+        let old = prepared
         prepared = pipeline
+        if let old { releaser.release(old) }
         return HostTime.ms(from: t0, to: HostTime.now())
     }
 
@@ -111,7 +131,10 @@ package final class VoiceEngine {
             } else {
                 pipeline = try VoicePipeline(model: currentModel, outRate: io.outputRate)
             }
+            let old = prepared
             prepared = nil
+            // a mismatched warm-up pipeline must not deinit its models on main (B5)
+            if let old, old !== pipeline { releaser.release(old) }
         } catch {
             io.stop()
             throw error
@@ -127,9 +150,9 @@ package final class VoiceEngine {
         sessionStarted = Date()
         let worker = session.begin()
         let inRate = io.inputRate, outRate = io.outputRate
-        let t = Thread { [weak self] in
+        let t = Thread { [weak self, releaser] in
             // a session that never runs must still signal, or stop() would wait forever
-            guard let self else { worker.done.signal(); return }
+            guard let self else { releaser.release(pipeline); worker.done.signal(); return }
             self.loop(pipeline: pipeline, inRate: inRate, outRate: outRate, token: worker.token, done: worker.done)
         }
         t.qualityOfService = .userInteractive
@@ -154,7 +177,12 @@ package final class VoiceEngine {
             throw NSError(domain: "RVCMac", code: 20, userInfo: [NSLocalizedDescriptionKey: tr("Переключение на лету требует одинаковых настроек задержки")])
         }
         let state = try ModelState(model: model, outRate: io.outputRate)
-        swapLock.withLockUnchecked { $0 = (state, HostTime.now()) }
+        let overwritten = swapLock.withLockUnchecked { s -> ModelState? in
+            let old = s?.0
+            s = (state, HostTime.now())
+            return old
+        }
+        if let overwritten { releaser.release(overwritten) }   // never deallocate under the lock (B5)
     }
 
     // MARK: - Session data
@@ -192,7 +220,12 @@ package final class VoiceEngine {
     }
 
     private func loop(pipeline: VoicePipeline, inRate: Double, outRate: Double, token: UInt64, done: DispatchSemaphore) {
-        defer { done.signal() }
+        defer {
+            // release the pipeline off the worker before signaling: the closure's captures
+            // are freed after the signal, so join() alone would not cover them (B5)
+            releaser.release(pipeline)
+            done.signal()
+        }
         let block16 = pipeline.block16
         let input = InputAssembler(inputRate: inRate, block16: block16, skipped: skipped16)
 
@@ -258,8 +291,16 @@ package final class VoiceEngine {
                 return v
             }
             if let swap {
+                // hand the old models to the background: deallocation must not run on the
+                // worker or under modelLock (B5)
+                let oldState = pipeline.state
                 pipeline.replaceModel(swap.0)
-                modelLock.withLockUnchecked { activeModel = swap.0.model }
+                let oldModel = modelLock.withLockUnchecked { () -> LoadedVoice in
+                    let old = activeModel
+                    activeModel = swap.0.model
+                    return old
+                }
+                releaser.release(oldState, oldModel)
                 switchRequestedAt = swap.1
             }
 

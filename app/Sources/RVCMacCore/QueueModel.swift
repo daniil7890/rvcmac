@@ -28,12 +28,20 @@ public enum QueueModel {
         public var pipelineMs: Double     // capture of the last sample -> playback of the first output sample (NaN likewise)
     }
 
+    public struct QueueSample: Sendable {
+        public var tMs: Double
+        public var queueMs: Double
+    }
+
     public struct Result: Sendable {
         public var blocks: [Block]
+        /// End-of-stream drain (all blocks written) is excluded from the underrun counters.
         public var underrunEvents = 0
         public var underrunFrames = 0
         public var trimEvents = 0
         public var trimFrames = 0
+        /// Queue level at every output callback, including the silent prefill waits.
+        public var queueTrace: [QueueSample] = []
     }
 
     public static func run(processingMs: [Double], config c: Config) -> Result {
@@ -56,6 +64,8 @@ public enum QueueModel {
 
         var result = Result(blocks: [])
         guard n > 0, c.blockOut > 0, c.outputBufferFrames > 0 else { result.blocks = blocks; return result }
+        // degenerate configs would never start playback or never advance: bail out instead of looping forever
+        guard c.prefill <= n * c.blockOut, processingMs.allSatisfy({ $0.isFinite }) else { result.blocks = blocks; return result }
 
         // Output callbacks, one per device buffer.
         let frames = c.outputBufferFrames
@@ -71,6 +81,7 @@ public enum QueueModel {
             k += 1
             while written < n && finished[written] <= now { written += 1 }
             let writePos = written * c.blockOut
+            result.queueTrace.append(QueueSample(tMs: now, queueMs: Double(writePos - read) / c.outputRate * 1000))
             if !started && writePos - read >= c.prefill { started = true }
             guard started else { continue }
             if written == n && writePos - read <= 0 { break }
@@ -97,6 +108,8 @@ public enum QueueModel {
             if got < frames && written < n {
                 result.underrunEvents += 1
                 result.underrunFrames += frames - got
+                // A2: the callback ramps down and waits for a new prefill before resuming
+                started = false
             }
         }
         result.blocks = blocks

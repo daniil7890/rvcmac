@@ -63,6 +63,33 @@ final class FadeTests: XCTestCase {
         XCTAssertLessThan(maxStep(out, count: n), 0.01)
     }
 
+    func testClampAcrossConfigs() {
+        // D3: every shipped config has cf < block, so the harness cannot reach cf > block;
+        // the clamp math is covered here for several block/crossfade combinations.
+        for (blockMs, cfMs) in [(80, 200), (100, 150), (100, 200), (250, 300)] {
+            let perFrame = 480   // 48 kHz
+            let block = blockMs * perFrame / 10
+            let configured = cfMs * perFrame / 10
+            let n = min(configured, block)
+            XCTAssertEqual(n, block)
+            let (fi, fo) = Fade.curves(n)
+            var old = [Float](repeating: 1, count: n)
+            var new = [Float](repeating: 0.25, count: n)
+            var out = [Float](repeating: 0, count: n)
+            old.withUnsafeBufferPointer { o in
+                new.withUnsafeBufferPointer { u in
+                    out.withUnsafeMutableBufferPointer { r in
+                        Fade.crossfade(old: o.baseAddress!, new: u.baseAddress!, into: r.baseAddress!,
+                                         count: n, fadeIn: fi, fadeOut: fo)
+                    }
+                }
+            }
+            XCTAssertEqual(out[0], 1)
+            XCTAssertEqual(out[n - 1], 0.25)   // the fade completes within the block
+            XCTAssertLessThan(maxStep(out, count: n), 0.01)
+        }
+    }
+
     func testFadeFromAnchorContinuesLastSample() {
         let (fi, fo) = Fade.curves(ramp)
         var out = [Float](repeating: 0.5, count: ramp)

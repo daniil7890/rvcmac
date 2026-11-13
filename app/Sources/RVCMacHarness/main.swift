@@ -21,6 +21,11 @@ usage: rvcmac-harness (--input FILE | --synthetic SECONDS) --voice NAME --block 
   --overload-extra-ms MS          simulate overload on a virtual clock: add MS to each block in the window (off by default)
   --overload-start S              overload window start, seconds (default 3)
   --overload-seconds S            overload window length, seconds (default 5)
+  --bypass-at S                   bypass from second S (off by default)
+  --bypass-off-at S               leave bypass at second S (default: never)
+  --gain G                        initial output gain (default 1)
+  --gain-at S                     step the output gain at second S (off by default)
+  --gain-to G                     gain value after --gain-at (default 1)
   --device-rate HZ                simulated input device rate (default 48000)
   --output-rate HZ                output rate (default 48000)
   --input-buffer FRAMES           simulated input buffer (default 512)
@@ -44,6 +49,7 @@ struct Options {
     static let known: Set<String> = [
         "input", "synthetic", "voice", "block", "extra", "crossfade", "compute", "pitch", "index", "protect", "gate", "gate-hysteresis", "gate-hold",
         "overload-start", "overload-seconds", "overload-extra-ms",
+        "bypass-at", "bypass-off-at", "gain", "gain-at", "gain-to",
         "device-rate", "output-rate", "input-buffer", "output-buffer", "runs", "warmup", "pacing", "seed",
         "loop-minutes", "home", "out",
     ]
@@ -252,6 +258,7 @@ func runHarness(_ o: Options) throws {
     params.gateDB = Float(try o.double("gate", -60))
     params.gateHysteresisDB = Float(try o.double("gate-hysteresis", Double(params.gateHysteresisDB)))
     params.gateHoldMs = Int(try o.double("gate-hold", Double(params.gateHoldMs)))
+    params.gain = Float(try o.double("gain", 1))
     params.bypass = false
 
     let deviceRate = try o.double("device-rate", 48000)
@@ -320,6 +327,10 @@ func runHarness(_ o: Options) throws {
     let overloadStartMs = try o.double("overload-start", 3) * 1000
     let overloadEndMs = overloadStartMs + (try o.double("overload-seconds", 5)) * 1000
     let overloaded = overloadExtraMs > 0
+    let bypassAt = try o.double("bypass-at", -1)
+    let bypassOffAt = try o.double("bypass-off-at", .infinity)
+    let gainAt = try o.double("gain-at", -1)
+    let gainTo = Float(try o.double("gain-to", 1))
     var backlogMs = [Double](repeating: 0, count: overloaded ? total : 0)
     var virtualStartMs = [Double](repeating: 0, count: overloaded ? total : 0)
 
@@ -392,7 +403,11 @@ func runHarness(_ o: Options) throws {
                     virtualStartMs[recorded] = clockMs
                 }
                 let wall0 = HostTime.now()
-                let res = try pipeline.process(input.block, params: params, times: &times)
+                var blockParams = params
+                let tSec = Double(b) * blockSec
+                if bypassAt >= 0 && tSec >= bypassAt && tSec < bypassOffAt { blockParams.bypass = true }
+                if gainAt >= 0 && tSec >= gainAt { blockParams.gain = gainTo }
+                let res = try pipeline.process(input.block, params: blockParams, times: &times)
                 wall[recorded] = HostTime.ms(from: wall0, to: HostTime.now())
                 input.consumeBlock()
                 totalMs += times[.total]
@@ -495,6 +510,7 @@ func runHarness(_ o: Options) throws {
     counters.inferredBlocks = rows.filter { $0.flags.inferred }.count
     counters.skippedInputMs = Double(skipped16.value) / 16
     counters.gatedBlocks = rows.filter { $0.flags.contains(.gated) }.count
+    counters.nanBlocks = rows.filter { $0.flags.contains(.nan) }.count
     var config = Report.ConfigInfo(compute: compute.rawValue, blockMs: cfg.blockMs, extraMs: cfg.extraMs, crossfadeMs: cfg.crossfadeMs,
                                    inputRate: deviceRate, outputRate: outputRate, pitch: params.pitch,
                                    indexRatio: Double(params.indexRatio), protect: Double(params.protect), gateDB: Double(params.gateDB))

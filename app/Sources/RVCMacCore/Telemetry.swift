@@ -58,6 +58,7 @@ public struct BlockFlags: OptionSet, Sendable {
     public static let bypass = BlockFlags(rawValue: 2)       // processing bypassed
     public static let modelSwitch = BlockFlags(rawValue: 4)  // first block after a model switch
     public static let warmup = BlockFlags(rawValue: 8)
+    public static let nan = BlockFlags(rawValue: 16)         // synth produced NaN/Inf: block replaced with ramped silence
 
     /// Only these blocks ran the models, so only they count for stage timings.
     public var inferred: Bool { !contains(.bypass) }

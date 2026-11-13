@@ -121,6 +121,7 @@ public struct Report: Codable, Sendable {
         public var outputOverflowFrames = 0
         public var modelSwitches = 0
         public var droppedRows = 0          // telemetry writes skipped while the exporter held the lock (B4)
+        public var nanBlocks = 0            // synth blocks replaced with ramped silence (D5)
         public var errors = 0
         public init() {}
 
@@ -138,6 +139,7 @@ public struct Report: Codable, Sendable {
             outputOverflowFrames = try c.decodeIfPresent(Int.self, forKey: .outputOverflowFrames) ?? 0
             modelSwitches = try c.decodeIfPresent(Int.self, forKey: .modelSwitches) ?? 0
             droppedRows = try c.decodeIfPresent(Int.self, forKey: .droppedRows) ?? 0
+            nanBlocks = try c.decodeIfPresent(Int.self, forKey: .nanBlocks) ?? 0
             errors = try c.decodeIfPresent(Int.self, forKey: .errors) ?? 0
         }
     }

@@ -57,6 +57,7 @@ package final class VoiceEngine {
     private let skipped16 = AtomicInt(0)
     private let modelSwitches = AtomicInt(0)
     private let droppedRows = AtomicInt(0)
+    private let nanBlocks = AtomicInt(0)
     package private(set) var sessionStarted = Date()
 
     /// Worker thread callbacks; the receiver hops to the main actor itself.
@@ -146,7 +147,7 @@ package final class VoiceEngine {
         // the rest of the session (was 3 blocks). Trims are counted in the diagnostics.
         io.outputMaxFill.value = pipeline.blockOut + pipeline.blockOut / 2
         recorderLock.withLockUnchecked { recorder.reset() }
-        for c in [outputOverflow, skipped16, modelSwitches, droppedRows] { c.value = 0 }
+        for c in [outputOverflow, skipped16, modelSwitches, droppedRows, nanBlocks] { c.value = 0 }
         sessionStarted = Date()
         let worker = session.begin()
         let inRate = io.inputRate, outRate = io.outputRate
@@ -207,6 +208,7 @@ package final class VoiceEngine {
         c.outputOverflowFrames = outputOverflow.value
         c.modelSwitches = modelSwitches.value
         c.droppedRows = droppedRows.value
+        c.nanBlocks = nanBlocks.value
         return c
     }
 
@@ -323,6 +325,7 @@ package final class VoiceEngine {
                 session.end(token: token)
                 break
             }
+            if result.flags.contains(.nan) { nanBlocks.add(1) }
             let blockEnd16 = input.consumeBlock()
 
             let w0 = io.outputRing.writePosition
@@ -389,6 +392,7 @@ package final class VoiceEngine {
                 c.outputOverflowFrames = outputOverflow.value
                 c.modelSwitches = modelSwitches.value
                 c.droppedRows = droppedRows.value
+                c.nanBlocks = nanBlocks.value
                 stats.counters = c
                 stats.overloads = io.overloads.value
                 lastReport = HostTime.now()

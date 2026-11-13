@@ -229,6 +229,8 @@ public enum Loc {
             "Output underruns (events / frames)",
         "Пропущено строк телеметрии при экспорте отчёта":
             "Telemetry rows skipped during report export",
+        "Кроссфейд длиннее блока — применяется %@ мс (по длине блока).":
+            "Crossfade is longer than the block — %@ ms is applied (the block length).",
         "Переполнение входа (кадры)":
             "Input overflow (frames)",
         "Пропущено входа, чтобы догнать":

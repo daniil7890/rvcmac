@@ -96,6 +96,8 @@ package final class VoicePipeline {
     package let window: Int
     package let blockOut: Int
     package let cfOut: Int
+    /// Crossfade actually applied: clamped to the block (D3). cfg.crossfadeF stays as chosen.
+    package let cf: Int
     package let searchOut: Int
     package let segOut: Int
 
@@ -108,8 +110,12 @@ package final class VoicePipeline {
     private var rng = Gaussian()
     private let bypassResampler: Resampler
     private var switched = false
+    private var wasBypass = false
+    private var lastGain: Float = 1
+    private var lastOutSample: Float = 0      // post-gain, anchors the bypass-entry fade (D2)
+    private var lastPreGainSample: Float = 0  // pre-gain, anchors SOLA on bypass exit (D2)
     private var gate = NoiseGate()
-    private var gateRamp = 0            // 0 = closed, cfOut = open
+    private var gateRamp = 0            // 0 = closed, cf = open
 
     /// Output of the last `process` call: `outCount` samples at `outRate`.
     package private(set) var out: [Float]
@@ -125,17 +131,12 @@ package final class VoicePipeline {
         let perFrame = Int(outRate) / 100
         blockOut = cfg.blockF * perFrame
         cfOut = cfg.crossfadeF * perFrame
+        cf = min(cfOut, blockOut)
         searchOut = cfg.solaF * perFrame
         segOut = cfg.R * perFrame
         win = [Float](repeating: 0, count: cfg.N)
         solaBuffer = [Float](repeating: 0, count: cfOut)
-        let n = cfOut
-        fadeIn = (0..<n).map { i in
-            let t = n > 1 ? Float(i) / Float(n - 1) : 1
-            let s = sinf(0.5 * .pi * t)
-            return s * s
-        }
-        fadeOut = fadeIn.map { 1 - $0 }
+        (fadeIn, fadeOut) = Fade.curves(cf)
         seg = [Float](repeating: 0, count: segOut)
         f0 = [Float](repeating: 0, count: cfg.F)
         bypassResampler = Resampler(from: 16000, to: outRate)
@@ -148,6 +149,10 @@ package final class VoicePipeline {
         for i in 0..<solaBuffer.count { solaBuffer[i] = 0 }
         gate.reset()
         gateRamp = 0
+        wasBypass = false
+        lastGain = 1
+        lastOutSample = 0
+        lastPreGainSample = 0
         outCount = 0
     }
 
@@ -198,11 +203,23 @@ package final class VoicePipeline {
         if p.bypass {
             let t = nowNs()
             outCount = out.withUnsafeMutableBufferPointer { bypassResampler.stream(block, into: $0.baseAddress!, capacity: $0.count) }
-            if p.gain != 1 { for i in 0..<outCount { out[i] *= p.gain } }
+            // an empty SRC block must not destroy the transition anchors
+            let preGainLast = outCount > 0 ? out[outCount - 1] : lastPreGainSample
+            applyGain(p.gain)
+            if !wasBypass && cf > 0 {
+                // entering bypass: fade from the last heard sample so the boundary is continuous (D2)
+                let n = min(cf, outCount)
+                out.withUnsafeMutableBufferPointer { o in
+                    Fade.fadeFrom(last: lastOutSample, into: o.baseAddress!, count: n, fadeIn: fadeIn, fadeOut: fadeOut)
+                }
+            }
+            lastPreGainSample = preGainLast
+            if outCount > 0 { lastOutSample = out[outCount - 1] }
+            wasBypass = true
             times[.output] = msSince(t)
             times[.total] = msSince(tBlock)
             flags.insert(.bypass)
-            gate.reset()    // leaving bypass always goes through the ramp
+            gate.reset()    // the gate ramp is re-seeded open on exit (D2)
             gateRamp = 0
             return (db, flags)
         }
@@ -285,12 +302,41 @@ package final class VoicePipeline {
 
         // 6. to output rate, SOLA crossfade
         t = nowNs()
+        let nan = s.audio.withUnsafeBufferPointer { Fade.hasNonFinite($0.baseAddress!, count: $0.count) }
+        if nan {
+            // NaN/Inf from the synthesizer: replace the whole block with ramped silence (D5)
+            flags.insert(.nan)
+            out.withUnsafeMutableBufferPointer { o in
+                Fade.silence(from: lastOutSample, into: o.baseAddress!, count: blockOut, ramp: cf, fadeOut: fadeOut)
+            }
+            for i in 0..<cf { solaBuffer[i] = 0 }
+            lastOffset = 0
+            outCount = blockOut
+            lastOutSample = 0
+            lastPreGainSample = 0
+            wasBypass = false
+            lastGain = p.gain
+            times[.output] = msSince(t)
+            times[.total] = msSince(tBlock)
+            return (db, flags)
+        }
         s.audio.withUnsafeBufferPointer { a in
             seg.withUnsafeMutableBufferPointer { s.outResampler.segment(a, into: $0.baseAddress!, outCount: segOut) }
         }
-        sola(gain: p.gain)
-        applyGate(open: gateOpen)
+        if wasBypass {
+            // leaving bypass: SOLA crossfades from the last heard sample (pre-gain domain,
+            // matching seg), not a stale processed tail (D2). The gate ramp is seeded open:
+            // bypass passed audio ungated, so ramping from zero would kill the anchor.
+            for i in 0..<cf { solaBuffer[i] = lastPreGainSample }
+            gateRamp = cf
+        }
+        sola()
         outCount = blockOut
+        applyGate(open: gateOpen)
+        lastPreGainSample = out[blockOut - 1]
+        applyGain(p.gain)
+        lastOutSample = out[blockOut - 1]
+        wasBypass = false
         times[.output] = msSince(t)
         times[.total] = msSince(tBlock)
         return (db, flags)
@@ -401,16 +447,16 @@ package final class VoicePipeline {
         }
     }
 
-    private func sola(gain: Float) {
+    private func sola() {
         var bestOffset = 0
-        if cfOut > 0 {
+        if cf > 0 {
             var best: Float = -.greatestFiniteMagnitude
             seg.withUnsafeBufferPointer { a in
                 solaBuffer.withUnsafeBufferPointer { sb in
                     for off in 0...searchOut {
                         var num: Float = 0, energy: Float = 0
-                        vDSP_dotpr(a.baseAddress! + off, 1, sb.baseAddress!, 1, &num, vDSP_Length(cfOut))
-                        vDSP_svesq(a.baseAddress! + off, 1, &energy, vDSP_Length(cfOut))
+                        vDSP_dotpr(a.baseAddress! + off, 1, sb.baseAddress!, 1, &num, vDSP_Length(cf))
+                        vDSP_svesq(a.baseAddress! + off, 1, &energy, vDSP_Length(cf))
                         let score = num / sqrtf(energy + 1e-8)
                         if score > best { best = score; bestOffset = off }
                     }
@@ -419,29 +465,38 @@ package final class VoicePipeline {
         }
         for i in 0..<blockOut {
             var v = seg[bestOffset + i]
-            if i < cfOut { v = v * fadeIn[i] + solaBuffer[i] * fadeOut[i] }
-            out[i] = v.isFinite ? v * gain : 0
+            if i < cf { v = v * fadeIn[i] + solaBuffer[i] * fadeOut[i] }
+            out[i] = v.isFinite ? v : 0
         }
-        for i in 0..<cfOut {
+        for i in 0..<cf {
             let v = seg[bestOffset + blockOut + i]
             solaBuffer[i] = v.isFinite ? v : 0
         }
         lastOffset = bestOffset
     }
 
-    /// Ramps the gate over the crossfade length. The ramp carries across blocks, so a crossfade longer than a block works too.
+    /// Ramps the gate over the applied crossfade length. The ramp carries across blocks.
     private func applyGate(open: Bool) {
-        if cfOut == 0 {
+        if cf == 0 {
             if !open { for i in 0..<blockOut { out[i] = 0 } }
             return
         }
-        let target = open ? cfOut : 0
-        if gateRamp == cfOut && target == cfOut { return }
+        let target = open ? cf : 0
+        if gateRamp == cf && target == cf { return }
         let step = open ? 1 : -1
         for i in 0..<blockOut {
             if gateRamp != target { gateRamp += step }
-            if gateRamp == 0 { out[i] = 0 } else if gateRamp != cfOut { out[i] *= fadeIn[gateRamp] }
+            if gateRamp == 0 { out[i] = 0 } else if gateRamp != cf { out[i] *= fadeIn[gateRamp] }
         }
+    }
+
+    /// Ramps the output gain towards the target over the crossfade instead of jumping at the
+    /// block boundary (D4). A constant gain of 1 multiplies nothing.
+    private func applyGain(_ target: Float) {
+        out.withUnsafeMutableBufferPointer { o in
+            Fade.gain(from: lastGain, to: target, into: o.baseAddress!, count: outCount, ramp: cf, fadeIn: fadeIn)
+        }
+        lastGain = target
     }
 
     /// Copies any MLMultiArray (float32/float16/double, any strides) into a dense, reused [Float].

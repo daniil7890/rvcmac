@@ -137,6 +137,11 @@ struct ContentView: View {
                         }
                     }
                     .disabled(s.busy || s.running)
+                    if s.crossfadeMs > s.blockMs {
+                        Text(trf("Кроссфейд длиннее блока — применяется %@ мс (по длине блока).", "\(min(s.crossfadeMs, s.blockMs))"))
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
                     if s.currentVoice != nil && s.currentConfig == nil {
                         HStack {
                             Text(tr("Под эти настройки модель ещё не собрана (или собрана старой версией)."))

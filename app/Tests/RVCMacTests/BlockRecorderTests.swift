@@ -78,6 +78,43 @@ final class BlockRecorderTests: XCTestCase {
         XCTAssertEqual(r.total, 1)
     }
 
+    func testSkippedAppendDoesNotCorruptLatencyOfAnyRow() {
+        let lock = OSAllocatedUnfairLock()
+        let r = BlockRecorder(capacity: 4)
+        let held = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        var pending: [(id: Int, ms: Double)] = []
+        // the worker contract: a latency update is queued only when the append happened
+        func appendBlock() {
+            let id = lock.withLockIfAvailable {
+                r.append(run: 0, t: 0, flags: [], stages: StageTimes(), algorithmicMs: 0, solaOffset: 0)
+            }
+            if let id { pending.append((id, Double(id) + 0.5)) }
+        }
+        for _ in 0..<6 { appendBlock() }   // ids 0..5, already wrapped over capacity 4
+        Thread {
+            lock.withLock {
+                held.signal()
+                release.wait()
+            }
+        }.start()
+        held.wait()
+        appendBlock()   // the exporter holds the lock: skipped, no id may be queued
+        release.signal()
+        lock.withLock {}
+        for _ in 0..<3 { appendBlock() }   // ids 6..8
+        XCTAssertEqual(pending.count, 9)
+        lock.withLock {
+            for p in pending { r.setLatency(id: p.id, pipelineMs: p.ms, endToEndMs: p.ms + 1) }
+        }
+        let rows = r.rows()
+        XCTAssertEqual(rows.map(\.index), [5, 6, 7, 8])
+        for row in rows {
+            XCTAssertEqual(row.pipelineMs, Double(row.index) + 0.5)
+            XCTAssertEqual(row.endToEndMs, Double(row.index) + 1.5)
+        }
+    }
+
     func testCountersDecodeFromOldReportsWithoutNewKeys() throws {
         let json = #"{"blocks":5,"underrunEvents":2,"errors":0}"#
         let c = try ReportMath.decoder().decode(Report.Counters.self, from: Data(json.utf8))

@@ -113,6 +113,12 @@ final class BlockRecorderTests: XCTestCase {
             XCTAssertEqual(row.pipelineMs, Double(row.index) + 0.5)
             XCTAssertEqual(row.endToEndMs, Double(row.index) + 1.5)
         }
+        // a stale id must stay rejected: without the guard it would overwrite slot 0 (id 8)
+        r.setLatency(id: 0, pipelineMs: -1, endToEndMs: -1)
+        for row in r.rows() {
+            XCTAssertEqual(row.pipelineMs, Double(row.index) + 0.5)
+            XCTAssertEqual(row.endToEndMs, Double(row.index) + 1.5)
+        }
     }
 
     func testCountersDecodeFromOldReportsWithoutNewKeys() throws {

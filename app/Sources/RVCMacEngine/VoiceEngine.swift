@@ -234,6 +234,8 @@ package final class VoiceEngine {
         var times = StageTimes()
         var pending: [Pending] = []
         pending.reserveCapacity(80)
+        var latencyUpdates: [(id: Int, pipelineMs: Double, endToEndMs: Double)] = []
+        latencyUpdates.reserveCapacity(80)
         var lastTrimEvents = io.trimEvents.value
         var recentStages = (0..<Stage.allCases.count).map { _ in RecentWindow(size: 64) }
         var recentPipeline = RecentWindow(size: 64)
@@ -259,21 +261,27 @@ package final class VoiceEngine {
             }
             guard !pending.isEmpty, let a = io.outputClock.read() else { return }
             let anchorNs = HostTime.ns(a.hostTime)
-            var resolved = 0
+            latencyUpdates.removeAll(keepingCapacity: true)
             for e in pending {
                 guard a.position >= e.w0 else { break }
                 let playNs = LatencyMath.hostNs(of: Double(e.w0), anchorPosition: Double(a.position), anchorNs: anchorNs, rate: outRate)
                 let pipelineMs = (playNs - e.captureNs) / 1e6
                 let e2e = pipelineMs + e.algorithmicMs + deviceMs
-                // never wait for an exporter holding the lock; a skipped update is counted (B4)
-                if recorderLock.withLockIfAvailable({ recorder.setLatency(id: e.id, pipelineMs: pipelineMs, endToEndMs: e2e) }) == nil {
-                    droppedRows.add(1)
-                }
+                latencyUpdates.append((e.id, pipelineMs, e2e))
                 recentPipeline.add(pipelineMs)
                 recentE2E.add(e2e)
-                resolved += 1
             }
-            if resolved > 0 { pending.removeFirst(resolved) }
+            if !latencyUpdates.isEmpty {
+                pending.removeFirst(latencyUpdates.count)
+                // one acquisition per batch instead of one per row (B4); on contention
+                // the whole batch is dropped (all-or-nothing) and counted
+                let updates = latencyUpdates
+                if recorderLock.withLockIfAvailable({ () -> Void in
+                    for u in updates { recorder.setLatency(id: u.id, pipelineMs: u.pipelineMs, endToEndMs: u.endToEndMs) }
+                }) == nil {
+                    droppedRows.add(latencyUpdates.count)
+                }
+            }
             if pending.count > 64 { pending.removeFirst(pending.count - 64) }
         }
 
@@ -333,8 +341,9 @@ package final class VoiceEngine {
                 : LatencyMath.algorithmicMs(blockF: cfg.blockF, solaF: cfg.solaF, crossfadeF: cfg.crossfadeF,
                                             solaOffset: pipeline.lastOffset, outputRate: outRate)
             let tSec = HostTime.ms(from: startHost, to: HostTime.now()) / 1000
+            let stages = times
             let id = recorderLock.withLockIfAvailable {
-                recorder.append(run: 0, t: tSec, flags: result.flags, stages: times, algorithmicMs: algorithmic, solaOffset: pipeline.lastOffset)
+                recorder.append(run: 0, t: tSec, flags: result.flags, stages: stages, algorithmicMs: algorithmic, solaOffset: pipeline.lastOffset)
             }
             if let id {
                 if captureNs.isFinite && written == count {

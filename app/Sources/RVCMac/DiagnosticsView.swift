@@ -166,6 +166,7 @@ private struct LivePanel: View {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
                 GridRow { Text(tr("Блоков")); Text("\(c.blocks)") }
                 GridRow { Text(tr("Underrun вывода (события / кадры)")); Text("\(c.underrunEvents) / \(c.underrunFrames)") }
+                GridRow { Text(tr("Пропущено строк телеметрии при экспорте отчёта")); Text("\(c.droppedRows)") }
                 GridRow { Text(tr("Переполнение входа (кадры)")); Text("\(c.inputOverflowFrames)") }
                 GridRow { Text(tr("Пропущено входа, чтобы догнать")); Text(String(format: tr("%.0f мс"), c.skippedInputMs)) }
                 GridRow { Text(tr("Обрезано вывода (кадры)")); Text("\(c.outputTrimFrames)") }

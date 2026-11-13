@@ -227,6 +227,8 @@ public enum Loc {
             "Blocks",
         "Underrun вывода (события / кадры)":
             "Output underruns (events / frames)",
+        "Пропущено строк телеметрии при экспорте отчёта":
+            "Telemetry rows skipped during report export",
         "Переполнение входа (кадры)":
             "Input overflow (frames)",
         "Пропущено входа, чтобы догнать":

@@ -52,10 +52,15 @@ package enum Fade {
         if to != 1 { for i in n..<count { out[i] *= to } }
     }
 
-    /// Ramps the tail of a partial buffer down to zero on underrun (A2).
+    /// Ramps the tail of a partial buffer down to zero on underrun (A2). The segment is
+    /// normalized so its first sample keeps the previous amplitude: no step at the callback
+    /// boundary when the partial buffer is shorter than the ramp.
     package static func rampDownTail(_ buf: UnsafeMutablePointer<Float>, got: Int, ramp: Int, fadeOut: [Float]) {
         let n = min(got, ramp)
-        for j in 0..<n { buf[got - n + j] *= fadeOut[ramp - n + j] }
+        guard n > 0 else { return }
+        let g0 = fadeOut[ramp - n]
+        let inv: Float = g0 > 0 ? 1 / g0 : 1
+        for j in 0..<n { buf[got - n + j] *= fadeOut[ramp - n + j] * inv }
     }
 
     /// Ramps the head of a buffer up from silence on resume after re-prefill (A2).

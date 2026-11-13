@@ -112,11 +112,11 @@ final class FadeTests: XCTestCase {
     }
 
     func testHasNonFinite() {
-        var clean: [Float] = [0, 0.5, -0.5]
+        let clean: [Float] = [0, 0.5, -0.5]
         XCTAssertFalse(clean.withUnsafeBufferPointer { Fade.hasNonFinite($0.baseAddress!, count: $0.count) })
-        var nan: [Float] = [0, .nan, 0.5]
+        let nan: [Float] = [0, .nan, 0.5]
         XCTAssertTrue(nan.withUnsafeBufferPointer { Fade.hasNonFinite($0.baseAddress!, count: $0.count) })
-        var inf: [Float] = [0, .infinity]
+        let inf: [Float] = [0, .infinity]
         XCTAssertTrue(inf.withUnsafeBufferPointer { Fade.hasNonFinite($0.baseAddress!, count: $0.count) })
     }
 
@@ -127,9 +127,31 @@ final class FadeTests: XCTestCase {
         buf.withUnsafeMutableBufferPointer { u in
             Fade.rampDownTail(u.baseAddress!, got: got, ramp: ramp, fadeOut: fo)
         }
+        XCTAssertEqual(buf[0], 1)              // no step at the callback boundary
         XCTAssertEqual(buf[got - 1], 0)        // the cut to silence is ramped, not a step
         for i in 1..<got { XCTAssertLessThanOrEqual(buf[i], buf[i - 1]) }
         XCTAssertLessThan(maxStep(buf, count: got), 0.05)
+    }
+
+    func testUnderrunRampKeepsBoundarySampleOfPartialBuffer() {
+        // the previous callback ended mid-splice at an arbitrary value; the ramp must
+        // continue from it exactly, whatever the blend produced
+        let (_, fo) = Fade.curves(ramp)
+        let got = 37
+        var buf: [Float] = (0..<got).map { 0.3 + Float($0) / 1000 }
+        let first = buf[0]
+        buf.withUnsafeMutableBufferPointer { u in
+            Fade.rampDownTail(u.baseAddress!, got: got, ramp: ramp, fadeOut: fo)
+        }
+        XCTAssertEqual(buf[0], first, accuracy: 1e-6)
+        XCTAssertEqual(buf[got - 1], 0)
+        // full-length partial buffer: unchanged behaviour (curve starts at 1)
+        var full = [Float](repeating: 0.7, count: ramp)
+        full.withUnsafeMutableBufferPointer { u in
+            Fade.rampDownTail(u.baseAddress!, got: ramp, ramp: ramp, fadeOut: fo)
+        }
+        XCTAssertEqual(full[0], 0.7)
+        XCTAssertEqual(full[ramp - 1], 0)
     }
 
     func testResumeRampUpSpansBuffers() {
@@ -152,6 +174,28 @@ final class FadeTests: XCTestCase {
         XCTAssertEqual(abs(second[0] - first[99]), fi[100] - fi[99], accuracy: 1e-6)
         var joined = first + second
         XCTAssertLessThan(maxStep(&joined, count: joined.count), 0.02)
+    }
+
+    func testTrimSpliceWithPartialTail() {
+        // A3: the discarded region can be shorter than the ramp; the scratch prefix is
+        // padded with the first discarded sample so the full-length fade still starts
+        // exactly at the old signal.
+        let (fi, fo) = Fade.curves(ramp)
+        let keep = 100
+        var old = [Float](repeating: 0, count: ramp)
+        for i in 0..<keep { old[ramp - keep + i] = Float(i) / Float(keep) }
+        let firstOld = old[ramp - keep]
+        for j in 0..<(ramp - keep) { old[j] = firstOld }
+        var out = [Float](repeating: 0.5, count: ramp)
+        old.withUnsafeBufferPointer { o in
+            out.withUnsafeMutableBufferPointer { u in
+                Fade.crossfade(old: o.baseAddress!, new: u.baseAddress!, into: u.baseAddress!,
+                                 count: ramp, fadeIn: fi, fadeOut: fo)
+            }
+        }
+        XCTAssertEqual(out[0], firstOld)                  // continues the old signal, no step
+        XCTAssertEqual(out[ramp - 1], 0.5, accuracy: 1e-6)
+        XCTAssertLessThan(maxStep(out, count: ramp), 0.05)
     }
 
     func testTrimSpliceIsSmooth() {

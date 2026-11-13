@@ -73,9 +73,11 @@ package enum DeviceEvent {
     case sampleRateChanged(String)
 }
 
-/// State only the output callback touches (mute ramp).
+/// State only the output callback touches (mute ramp, underrun/resume ramps, trim splice).
 private final class OutputCallbackState {
     var gain: Float = 1
+    var resumeLeft = 0    // A2: ramp-up samples still to play after (re)prefill
+    var spliceLeft = 0    // A3: trim crossfade samples still to play
 }
 
 /// Runs a HAL IOProc on the input device and another on the output device (they may be different devices).
@@ -90,6 +92,7 @@ package final class AudioIO {
     private static let maxFrames = 16384
     private let scratchIn = UnsafeMutablePointer<Float>.allocate(capacity: AudioIO.maxFrames)
     private let scratchOut = UnsafeMutablePointer<Float>.allocate(capacity: AudioIO.maxFrames)
+    private var spliceBuf: UnsafeMutablePointer<Float>?   // A3: discarded-head scratch, sized in start()
     private var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
 
     /// Captured samples at the input device rate (channel 1).
@@ -128,6 +131,7 @@ package final class AudioIO {
         stop()
         scratchIn.deallocate()
         scratchOut.deallocate()
+        spliceBuf?.deallocate()
     }
 
     package func start(input: AudioDeviceID, output: AudioDeviceID) throws {
@@ -178,6 +182,13 @@ package final class AudioIO {
         let started = outputStarted, prefill = outputPrefill, maxFill = outputMaxFill, mute = muted
         let uEvents = underrunEvents, uFrames = underrunFrames, tFrames = trimFrames, tEvents = trimEvents
         let cbState = OutputCallbackState()
+        // A2/A3: 5 ms equal-power ramps and the discarded-head scratch, allocated here once,
+        // never inside the callback
+        let rampLen = max(1, Int(0.005 * outputRate))
+        let (fadeIn, fadeOut) = Fade.curves(rampLen)
+        spliceBuf?.deallocate()
+        let splice = UnsafeMutablePointer<Float>.allocate(capacity: rampLen)
+        spliceBuf = splice
         // ~5 ms one-pole ramp so mute / push-to-talk never clicks
         let rampCoef = Float(1 - exp(-1 / (0.005 * outputRate)))
         st = AudioDeviceCreateIOProcIDWithBlock(&outputProc, output, nil) { _, _, _, outOutputData, inOutputTime in
@@ -187,13 +198,29 @@ package final class AudioIO {
             var frames = Int(first.mDataByteSize) / (4 * ch0)
             if frames > maxFrames { frames = maxFrames; truncated.add(1) }
             var got = 0
-            if started.value == 0 && outRing.available >= prefill.value { started.value = 1 }
+            var justPrefilled = false
+            if started.value == 0 && outRing.available >= prefill.value {
+                started.value = 1
+                cbState.resumeLeft = rampLen   // A2: ramp up after (re)prefill
+                justPrefilled = true
+            }
             if started.value != 0 {
                 // written so it cannot overflow when the limit is Int.max
                 let queued = outRing.available, limit = maxFill.value
                 if queued > frames && queued - frames > limit {
-                    tFrames.add(outRing.skip(queued - frames - limit))
+                    let drop = queued - frames - limit
+                    // A3: keep the head of the discarded region (the samples right after the
+                    // last played one) to crossfade the splice
+                    let keep = min(drop, rampLen)
+                    _ = outRing.read(into: splice + (rampLen - keep), count: keep)
+                    // pad the prefix with the first discarded sample so the fade always starts
+                    // exactly at the old signal, even when the discarded region is short
+                    let firstOld = splice[rampLen - keep]
+                    for j in 0..<(rampLen - keep) { splice[j] = firstOld }
+                    tFrames.add(outRing.skip(drop - keep) + keep)
                     tEvents.add(1)
+                    // the ramp-up from silence is already continuous; no splice on top of it
+                    cbState.spliceLeft = justPrefilled ? 0 : rampLen
                 }
                 let ts = inOutputTime.pointee
                 let host = ts.mFlags.contains(.hostTimeValid) ? ts.mHostTime : rvc_host_now()
@@ -204,7 +231,26 @@ package final class AudioIO {
                     uFrames.add(frames - got)
                 }
             }
-            if got < frames { (sOut + got).update(repeating: 0, count: frames - got) }
+            // A3: crossfade the splice (may span callbacks); applied before the underrun ramp
+            // so a partial buffer continues the blend instead of jumping
+            if cbState.spliceLeft > 0 && got > 0 {
+                let n = min(cbState.spliceLeft, got)
+                let base = rampLen - cbState.spliceLeft
+                for j in 0..<n { sOut[j] = sOut[j] * fadeIn[base + j] + splice[base + j] * fadeOut[base + j] }
+                cbState.spliceLeft -= n
+            }
+            if got < frames {
+                // A2: ramp the partial buffer down to zero, then wait for a new prefill
+                Fade.rampDownTail(sOut, got: got, ramp: rampLen, fadeOut: fadeOut)
+                started.value = 0
+                cbState.spliceLeft = 0
+                cbState.resumeLeft = 0
+                (sOut + got).update(repeating: 0, count: frames - got)
+            }
+            // A2: ramp up from silence after re-prefill (may span callbacks)
+            if cbState.resumeLeft > 0 && got > 0 {
+                cbState.resumeLeft -= Fade.rampUpHead(sOut, got: got, left: cbState.resumeLeft, ramp: rampLen, fadeIn: fadeIn)
+            }
             let target: Float = mute.value != 0 ? 0 : 1
             var g = cbState.gain
             if g != target || target != 1 {
@@ -219,14 +265,18 @@ package final class AudioIO {
                 guard let data = buffer.mData else { continue }
                 let ch = max(Int(buffer.mNumberChannels), 1)
                 let dst = data.assumingMemoryBound(to: Float.self)
-                let n = min(Int(buffer.mDataByteSize) / (4 * ch), frames)
+                let full = Int(buffer.mDataByteSize) / (4 * ch)
+                let n = min(full, frames)
                 if ch == 1 {
                     dst.update(from: sOut, count: n)
+                    // A5: zero the tail beyond the frames we produced
+                    if full > n { (dst + n).update(repeating: 0, count: full - n) }
                 } else {
                     for i in 0..<n {
                         let v = sOut[i]
                         for c in 0..<ch { dst[i * ch + c] = v }
                     }
+                    if full > n { (dst + n * ch).update(repeating: 0, count: (full - n) * ch) }
                 }
             }
         }

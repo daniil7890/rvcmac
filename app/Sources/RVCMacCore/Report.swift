@@ -120,8 +120,26 @@ public struct Report: Codable, Sendable {
         public var outputTrimFrames = 0     // output samples dropped to keep the queue short
         public var outputOverflowFrames = 0
         public var modelSwitches = 0
+        public var droppedRows = 0          // telemetry writes skipped while the exporter held the lock (B4)
         public var errors = 0
         public init() {}
+
+        /// Reports older than a counter lack its key; missing keys decode as the default.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            blocks = try c.decodeIfPresent(Int.self, forKey: .blocks) ?? 0
+            inferredBlocks = try c.decodeIfPresent(Int.self, forKey: .inferredBlocks) ?? 0
+            gatedBlocks = try c.decodeIfPresent(Int.self, forKey: .gatedBlocks) ?? 0
+            underrunEvents = try c.decodeIfPresent(Int.self, forKey: .underrunEvents) ?? 0
+            underrunFrames = try c.decodeIfPresent(Int.self, forKey: .underrunFrames) ?? 0
+            inputOverflowFrames = try c.decodeIfPresent(Int.self, forKey: .inputOverflowFrames) ?? 0
+            skippedInputMs = try c.decodeIfPresent(Double.self, forKey: .skippedInputMs) ?? 0
+            outputTrimFrames = try c.decodeIfPresent(Int.self, forKey: .outputTrimFrames) ?? 0
+            outputOverflowFrames = try c.decodeIfPresent(Int.self, forKey: .outputOverflowFrames) ?? 0
+            modelSwitches = try c.decodeIfPresent(Int.self, forKey: .modelSwitches) ?? 0
+            droppedRows = try c.decodeIfPresent(Int.self, forKey: .droppedRows) ?? 0
+            errors = try c.decodeIfPresent(Int.self, forKey: .errors) ?? 0
+        }
     }
 
     public struct Resources: Codable, Sendable {

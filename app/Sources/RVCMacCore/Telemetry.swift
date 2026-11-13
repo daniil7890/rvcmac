@@ -124,15 +124,43 @@ public final class BlockRecorder {
 
     /// Oldest-first copy of the stored blocks. `last` limits it to the newest n.
     public func rows(last: Int? = nil) -> [BlockRow] {
-        let n = min(storedCount, last ?? Int.max)
+        Self.makeRows(storage: storage, total: total, capacity: capacity, last: last)
+    }
+
+    /// Flat copy of the stored blocks for exporting: take it under the owner's lock (one
+    /// copy, no per-row allocation) and materialize rows outside the lock, so an export
+    /// never keeps the writer waiting (B4).
+    public struct Snapshot: Sendable {
+        fileprivate let storage: [Double]
+        fileprivate let total: Int
+        fileprivate let capacity: Int
+
+        /// Oldest-first rows; `last` limits it to the newest n.
+        public func rows(last: Int? = nil) -> [BlockRow] {
+            BlockRecorder.makeRows(storage: storage, total: total, capacity: capacity, last: last)
+        }
+    }
+
+    public func snapshot() -> Snapshot {
+        let n = min(total, capacity) * Self.fields
+        // force a real copy: Array(fullSlice) may share the buffer (CoW), which would
+        // move a multi-MB copy onto the worker's next append
+        var copy = [Double]()
+        copy.reserveCapacity(n)
+        copy.append(contentsOf: storage[0..<n])
+        return Snapshot(storage: copy, total: total, capacity: capacity)
+    }
+
+    fileprivate static func makeRows(storage: [Double], total: Int, capacity: Int, last: Int?) -> [BlockRow] {
+        let n = min(min(total, capacity), last ?? Int.max)
         var out: [BlockRow] = []
         out.reserveCapacity(n)
         for id in (total - n)..<total {
-            let base = (id % capacity) * Self.fields
-            let tail = base + 4 + Self.stageCount
+            let base = (id % capacity) * fields
+            let tail = base + 4 + stageCount
             out.append(BlockRow(run: Int(storage[base]), index: Int(storage[base + 1]), t: storage[base + 2],
                                 flags: BlockFlags(rawValue: Int(storage[base + 3])),
-                                stages: Array(storage[(base + 4)..<(base + 4 + Self.stageCount)]),
+                                stages: Array(storage[(base + 4)..<(base + 4 + stageCount)]),
                                 pipelineMs: storage[tail], endToEndMs: storage[tail + 1],
                                 algorithmicMs: storage[tail + 2], solaOffset: Int(storage[tail + 3])))
         }

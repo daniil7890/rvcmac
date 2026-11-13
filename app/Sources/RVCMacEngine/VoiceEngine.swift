@@ -55,6 +55,7 @@ package final class VoiceEngine {
     private let outputOverflow = AtomicInt(0)
     private let skipped16 = AtomicInt(0)
     private let modelSwitches = AtomicInt(0)
+    private let droppedRows = AtomicInt(0)
     package private(set) var sessionStarted = Date()
 
     /// Worker thread callbacks; the receiver hops to the main actor itself.
@@ -122,7 +123,7 @@ package final class VoiceEngine {
         // the rest of the session (was 3 blocks). Trims are counted in the diagnostics.
         io.outputMaxFill.value = pipeline.blockOut + pipeline.blockOut / 2
         recorderLock.withLockUnchecked { recorder.reset() }
-        for c in [outputOverflow, skipped16, modelSwitches] { c.value = 0 }
+        for c in [outputOverflow, skipped16, modelSwitches, droppedRows] { c.value = 0 }
         sessionStarted = Date()
         let worker = session.begin()
         let inRate = io.inputRate, outRate = io.outputRate
@@ -158,7 +159,12 @@ package final class VoiceEngine {
 
     // MARK: - Session data
 
-    package func sessionRows() -> [BlockRow] { recorderLock.withLockUnchecked { recorder.rows() } }
+    package func sessionRows() -> [BlockRow] {
+        // one flat copy under the lock; rows are materialized outside it so the worker
+        // never waits for an export (B4)
+        let snapshot = recorderLock.withLockUnchecked { recorder.snapshot() }
+        return snapshot.rows()
+    }
 
     package func counters(rows: [BlockRow]) -> Report.Counters {
         var c = Report.Counters()
@@ -172,6 +178,7 @@ package final class VoiceEngine {
         c.outputTrimFrames = io.trimFrames.value
         c.outputOverflowFrames = outputOverflow.value
         c.modelSwitches = modelSwitches.value
+        c.droppedRows = droppedRows.value
         return c
     }
 
@@ -206,6 +213,7 @@ package final class VoiceEngine {
         stats.inputBufferFrames = io.inputBufferFrames
         stats.outputBufferFrames = io.outputBufferFrames
         var lastReport = HostTime.now()
+        var lastTotal = 0
         let startHost = HostTime.now()
         var switchRequestedAt: UInt64?
 
@@ -224,7 +232,10 @@ package final class VoiceEngine {
                 let playNs = LatencyMath.hostNs(of: Double(e.w0), anchorPosition: Double(a.position), anchorNs: anchorNs, rate: outRate)
                 let pipelineMs = (playNs - e.captureNs) / 1e6
                 let e2e = pipelineMs + e.algorithmicMs + deviceMs
-                recorderLock.withLockUnchecked { recorder.setLatency(id: e.id, pipelineMs: pipelineMs, endToEndMs: e2e) }
+                // never wait for an exporter holding the lock; a skipped update is counted (B4)
+                if recorderLock.withLockIfAvailable({ recorder.setLatency(id: e.id, pipelineMs: pipelineMs, endToEndMs: e2e) }) == nil {
+                    droppedRows.add(1)
+                }
                 recentPipeline.add(pipelineMs)
                 recentE2E.add(e2e)
                 resolved += 1
@@ -281,11 +292,15 @@ package final class VoiceEngine {
                 : LatencyMath.algorithmicMs(blockF: cfg.blockF, solaF: cfg.solaF, crossfadeF: cfg.crossfadeF,
                                             solaOffset: pipeline.lastOffset, outputRate: outRate)
             let tSec = HostTime.ms(from: startHost, to: HostTime.now()) / 1000
-            let id = recorderLock.withLockUnchecked {
+            let id = recorderLock.withLockIfAvailable {
                 recorder.append(run: 0, t: tSec, flags: result.flags, stages: times, algorithmicMs: algorithmic, solaOffset: pipeline.lastOffset)
             }
-            if captureNs.isFinite && written == count {
-                pending.append(Pending(w0: w0, captureNs: captureNs, algorithmicMs: algorithmic, id: id))
+            if let id {
+                if captureNs.isFinite && written == count {
+                    pending.append(Pending(w0: w0, captureNs: captureNs, algorithmicMs: algorithmic, id: id))
+                }
+            } else {
+                droppedRows.add(1)   // the exporter holds the lock; skip the row, never wait (B4)
             }
             if let req = switchRequestedAt, result.flags.contains(.modelSwitch) {
                 modelSwitches.add(1)
@@ -313,8 +328,9 @@ package final class VoiceEngine {
                 stats.pipeline = recentPipeline.distribution
                 stats.endToEnd = recentE2E.distribution
                 stats.outputQueueMs = Double(io.outputRing.available) / outRate * 1000
+                if let total = recorderLock.withLockIfAvailable({ recorder.total }) { lastTotal = total }
                 var c = Report.Counters()
-                c.blocks = recorderLock.withLockUnchecked { recorder.total }
+                c.blocks = lastTotal
                 c.underrunEvents = io.underrunEvents.value
                 c.underrunFrames = io.underrunFrames.value
                 c.inputOverflowFrames = io.inputRing.dropped
@@ -322,6 +338,7 @@ package final class VoiceEngine {
                 c.outputTrimFrames = io.trimFrames.value
                 c.outputOverflowFrames = outputOverflow.value
                 c.modelSwitches = modelSwitches.value
+                c.droppedRows = droppedRows.value
                 stats.counters = c
                 stats.overloads = io.overloads.value
                 lastReport = HostTime.now()

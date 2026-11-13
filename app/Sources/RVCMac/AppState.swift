@@ -347,8 +347,10 @@ final class AppState: ObservableObject {
 
     func stop() {
         if let engine {
-            lastSession = makeLiveReport(engine)
+            // stop first: the worker is joined, so the report sees every block and nothing
+            // competes for the recorder; io rates and latencies survive io.stop() (B4)
             engine.stop()
+            lastSession = makeLiveReport(engine)
             if let r = lastSession?.report { appendLog(summaryLine(r)) }
         }
         engine = nil

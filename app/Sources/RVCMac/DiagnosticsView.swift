@@ -86,8 +86,8 @@ private struct LivePanel: View {
                     Text("").gridColumnAlignment(.leading)
                     Text("p50").bold(); Text("p95").bold(); Text("p99").bold(); Text(tr("макс")).bold()
                 }
-                row(tr("Полная (оценка)"), s.stats.endToEnd)
-                row(tr("Конвейер: захват → вывод"), s.stats.pipeline)
+                row(tr("Полная (оценка)"), s.stats.endToEnd, markP99: p99Unreliable(s.stats.counters))
+                row(tr("Конвейер: захват → вывод"), s.stats.pipeline, markP99: p99Unreliable(s.stats.counters))
                 GridRow {
                     Text(tr("Алгоритмическая (блок + кроссфейд + SOLA)"))
                     Text(ms(s.stats.algorithmicMs)); Text(""); Text(""); Text("")
@@ -106,15 +106,24 @@ private struct LivePanel: View {
             .padding(4)
             Text(trf("Полная = конвейер + алгоритмическая + устройства. Буферы IO: вход %@, выход %@ кадров.", "\(s.stats.inputBufferFrames)", "\(s.stats.outputBufferFrames)"))
                 .font(.caption).foregroundStyle(.secondary)
+            if p99Unreliable(s.stats.counters) {
+                Text(tr("* p99 недостоверен: неизмеренные блоки ≥ 1% (выбрасываются при подрезке)."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
-    private func row(_ title: String, _ d: Distribution) -> some View {
+    /// q is unreliable when q >= coverage; for p99 that means an unresolved fraction >= 1%.
+    private func p99Unreliable(_ c: Report.Counters) -> Bool {
+        c.blocks > 0 && Double(c.unresolvedLatency) / Double(c.blocks) >= 0.01
+    }
+
+    private func row(_ title: String, _ d: Distribution, markP99: Bool = false) -> some View {
         GridRow {
             Text(title)
             Text(d.count > 0 ? ms(d.p50) : "—")
             Text(d.count > 0 ? ms(d.p95) : "—")
-            Text(d.count > 0 ? ms(d.p99) : "—")
+            Text(d.count > 0 ? (markP99 ? ms(d.p99) + "*" : ms(d.p99)) : "—")
             Text(d.count > 0 ? ms(d.max) : "—")
         }
     }
@@ -160,11 +169,19 @@ private struct LivePanel: View {
         }
     }
 
+    private func coverageText(_ c: Report.Counters) -> String {
+        guard c.blocks > 0 else { return "—" }
+        let measured = max(0, c.blocks - c.unresolvedLatency)
+        let pct = Double(measured) / Double(c.blocks) * 100
+        return String(format: tr("%.1f%% (%@ без задержки)"), pct, "\(c.unresolvedLatency)")
+    }
+
     private var countersBox: some View {
         GroupBox(tr("Стабильность и ресурсы")) {
             let c = s.stats.counters
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
                 GridRow { Text(tr("Блоков")); Text("\(c.blocks)") }
+                GridRow { Text(tr("Покрытие задержки")); Text(coverageText(c)) }
                 GridRow { Text(tr("Underrun вывода (события / кадры)")); Text("\(c.underrunEvents) / \(c.underrunFrames)") }
                 GridRow { Text(tr("Пропущено строк телеметрии при экспорте отчёта")); Text("\(c.droppedRows)") }
                 GridRow { Text(tr("Переполнение входа (кадры)")); Text("\(c.inputOverflowFrames)") }
@@ -249,7 +266,13 @@ struct ReportSummaryView: View {
                     if let l = report.latency, l.endToEnd.count > 0 {
                         GridRow {
                             Text(report.kind == .live ? tr("Полная задержка") : tr("Обработка + алгоритмическая")).bold()
-                            Text(ms(l.endToEnd.p50)); Text(ms(l.endToEnd.p95)); Text(ms(l.endToEnd.p99)); Text(ms(l.endToEnd.max))
+                            Text(ms(l.endToEnd.p50)); Text(ms(l.endToEnd.p95))
+                            Text(l.unreliablePercentiles?.contains("p99") == true ? ms(l.endToEnd.p99) + "*" : ms(l.endToEnd.p99))
+                            Text(ms(l.endToEnd.max))
+                        }
+                        if let cov = l.latencyCoverage {
+                            Text(String(format: tr("Покрытие задержки: %.1f%%"), cov * 100))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }

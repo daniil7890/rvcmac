@@ -237,6 +237,14 @@ public enum Loc {
             "Input buffer (dev): requested %@ frames, actual %@ (OSStatus %@).",
         "Голос %@ прогрет за %.0f мс (до передачи воркеру).":
             "Voice %@ warmed up in %.0f ms (before handoff to the worker).",
+        "Покрытие задержки":
+            "Latency coverage",
+        "%.1f%% (%@ без задержки)":
+            "%.1f%% (%@ without latency)",
+        "* p99 недостоверен: неизмеренные блоки ≥ 1% (выбрасываются при подрезке).":
+            "* p99 is unreliable: unresolved blocks ≥ 1% (discarded on trims).",
+        "Покрытие задержки: %.1f%%":
+            "Latency coverage: %.1f%%",
         "Underrun: +%@ событий (всего %@).":
             "Underrun: +%@ events (%@ total).",
         "Подрезка очереди: +%@ событий (всего %@).":

@@ -100,9 +100,16 @@ public struct Report: Codable, Sendable {
         public var deviceInputMs: Double    // Core Audio latency + safety offset (+ stream latency)
         public var deviceOutputMs: Double
         public var endToEnd: Distribution   // pipeline + algorithmic + devices
-        public init(pipeline: Distribution, algorithmic: Distribution, deviceInputMs: Double, deviceOutputMs: Double, endToEnd: Distribution) {
+        /// Fraction of non-warmup blocks with a resolved latency (0..1). nil in old reports.
+        public var latencyCoverage: Double? = nil
+        /// Percentiles made unreliable by the unresolved fraction: q is unreliable when
+        /// q >= coverage (the missing blocks are the longest, discarded on trims). nil in old reports.
+        public var unreliablePercentiles: [String]? = nil
+        public init(pipeline: Distribution, algorithmic: Distribution, deviceInputMs: Double, deviceOutputMs: Double,
+                    endToEnd: Distribution, latencyCoverage: Double? = nil, unreliablePercentiles: [String]? = nil) {
             self.pipeline = pipeline; self.algorithmic = algorithmic
             self.deviceInputMs = deviceInputMs; self.deviceOutputMs = deviceOutputMs; self.endToEnd = endToEnd
+            self.latencyCoverage = latencyCoverage; self.unreliablePercentiles = unreliablePercentiles
         }
     }
 
@@ -135,6 +142,7 @@ public struct Report: Codable, Sendable {
         public var modelSwitches = 0
         public var droppedRows = 0          // telemetry writes skipped while the exporter held the lock (B4)
         public var nanBlocks = 0            // synth blocks replaced with ramped silence (D5)
+        public var unresolvedLatency = 0    // blocks whose latency was discarded (trim) or never resolved
         public var errors = 0
         public init() {}
 
@@ -154,6 +162,7 @@ public struct Report: Codable, Sendable {
             modelSwitches = try c.decodeIfPresent(Int.self, forKey: .modelSwitches) ?? 0
             droppedRows = try c.decodeIfPresent(Int.self, forKey: .droppedRows) ?? 0
             nanBlocks = try c.decodeIfPresent(Int.self, forKey: .nanBlocks) ?? 0
+            unresolvedLatency = try c.decodeIfPresent(Int.self, forKey: .unresolvedLatency) ?? 0
             errors = try c.decodeIfPresent(Int.self, forKey: .errors) ?? 0
         }
     }
@@ -192,10 +201,20 @@ public enum ReportMath {
 
     public static func latency(_ rows: [BlockRow], deviceInputMs: Double, deviceOutputMs: Double) -> Report.LatencySummary {
         let used = rows.filter { !$0.flags.contains(.warmup) }
+        // Coverage: unresolved blocks (discarded on trims, still pending at stop) are the
+        // longest ones, so a percentile q is unreliable when q >= coverage.
+        let measured = used.filter { $0.endToEndMs.isFinite }.count
+        let coverage = used.isEmpty ? 1.0 : Double(measured) / Double(used.count)
+        var unreliable: [String] = []
+        if 0.50 >= coverage { unreliable.append("p50") }
+        if 0.95 >= coverage { unreliable.append("p95") }
+        if 0.99 >= coverage { unreliable.append("p99") }
         return Report.LatencySummary(pipeline: Distribution.of(used.map(\.pipelineMs)),
                                      algorithmic: Distribution.of(used.map(\.algorithmicMs)),
                                      deviceInputMs: deviceInputMs, deviceOutputMs: deviceOutputMs,
-                                     endToEnd: Distribution.of(used.map(\.endToEndMs)))
+                                     endToEnd: Distribution.of(used.map(\.endToEndMs)),
+                                     latencyCoverage: coverage,
+                                     unreliablePercentiles: unreliable.isEmpty ? nil : unreliable)
     }
 
     public static func csv(_ rows: [BlockRow]) -> String {

@@ -128,6 +128,7 @@ final class BlockRecorderTests: XCTestCase {
         XCTAssertEqual(c.underrunEvents, 2)
         XCTAssertEqual(c.droppedRows, 0)
         XCTAssertEqual(c.trimEvents, 0)
+        XCTAssertEqual(c.unresolvedLatency, 0)
         XCTAssertEqual(c.skippedInputMs, 0)
     }
 

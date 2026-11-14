@@ -58,6 +58,7 @@ package final class VoiceEngine {
     private let modelSwitches = AtomicInt(0)
     private let droppedRows = AtomicInt(0)
     private let nanBlocks = AtomicInt(0)
+    private let unresolvedLatency = AtomicInt(0)
     private let switchGen = AtomicInt(0)
     package private(set) var sessionStarted = Date()
 
@@ -145,7 +146,7 @@ package final class VoiceEngine {
         // the rest of the session (was 3 blocks). Trims are counted in the diagnostics.
         io.outputMaxFill.value = pipeline.blockOut + pipeline.blockOut / 2
         recorderLock.withLockUnchecked { recorder.reset() }
-        for c in [outputOverflow, skipped16, modelSwitches, droppedRows, nanBlocks] { c.value = 0 }
+        for c in [outputOverflow, skipped16, modelSwitches, droppedRows, nanBlocks, unresolvedLatency] { c.value = 0 }
         sessionStarted = Date()
         let worker = session.begin()
         let inRate = io.inputRate, outRate = io.outputRate
@@ -247,6 +248,7 @@ package final class VoiceEngine {
         c.modelSwitches = modelSwitches.value
         c.droppedRows = droppedRows.value
         c.nanBlocks = nanBlocks.value
+        c.unresolvedLatency = unresolvedLatency.value
         return c
     }
 
@@ -260,12 +262,6 @@ package final class VoiceEngine {
     }
 
     private func loop(pipeline: VoicePipeline, inRate: Double, outRate: Double, token: UInt64, done: DispatchSemaphore) {
-        defer {
-            // release the pipeline off the worker before signaling: the closure's captures
-            // are freed after the signal, so join() alone would not cover them (B5)
-            releaser.release(pipeline)
-            done.signal()
-        }
         let block16 = pipeline.block16
         let input = InputAssembler(inputRate: inRate, block16: block16, skipped: skipped16)
 
@@ -276,6 +272,14 @@ package final class VoiceEngine {
         pending.reserveCapacity(80)
         var latencyUpdates: [(id: Int, pipelineMs: Double, endToEndMs: Double)] = []
         latencyUpdates.reserveCapacity(80)
+        defer {
+            // the tail still in pending will never be resolved (the worker is exiting)
+            unresolvedLatency.add(pending.count)
+            // release the pipeline off the worker before signaling: the closure's captures
+            // are freed after the signal, so join() alone would not cover them (B5)
+            releaser.release(pipeline)
+            done.signal()
+        }
         var lastTrimEvents = io.trimEvents.value
         var recentStages = (0..<Stage.allCases.count).map { _ in RecentWindow(size: 64) }
         var recentPipeline = RecentWindow(size: 64)
@@ -303,6 +307,7 @@ package final class VoiceEngine {
                 return
             case .discard:
                 // trimmed samples were never played, so their timing is unknown
+                unresolvedLatency.add(pending.count)
                 pending.removeAll(keepingCapacity: true)
                 lastTrimEvents = trims
                 return
@@ -330,9 +335,15 @@ package final class VoiceEngine {
                     for u in updates { recorder.setLatency(id: u.id, pipelineMs: u.pipelineMs, endToEndMs: u.endToEndMs) }
                 }) == nil {
                     droppedRows.add(latencyUpdates.count)
+                    // the batch left pending but the rows stay NaN: count them as unresolved
+                    unresolvedLatency.add(latencyUpdates.count)
                 }
             }
-            if pending.count > 64 { pending.removeFirst(pending.count - 64) }
+            if pending.count > 64 {
+                let drop = pending.count - 64
+                unresolvedLatency.add(drop)
+                pending.removeFirst(drop)
+            }
         }
 
         while session.isCurrent(token) {
@@ -399,6 +410,9 @@ package final class VoiceEngine {
             if let id {
                 if captureNs.isFinite && written == count {
                     pending.append(Pending(w0: w0, captureNs: captureNs, algorithmicMs: algorithmic, id: id))
+                } else {
+                    // the row exists but will never enter pending: no clock yet, or a partial write
+                    unresolvedLatency.add(1)
                 }
             } else {
                 droppedRows.add(1)   // the exporter holds the lock; skip the row, never wait (B4)
@@ -442,6 +456,7 @@ package final class VoiceEngine {
                 c.modelSwitches = modelSwitches.value
                 c.droppedRows = droppedRows.value
                 c.nanBlocks = nanBlocks.value
+                c.unresolvedLatency = unresolvedLatency.value
                 stats.counters = c
                 stats.overloads = io.overloads.value
                 lastReport = HostTime.now()

@@ -16,7 +16,19 @@ public struct Report: Codable, Sendable {
     public var runs: [RunSummary]
     public var counters: Counters
     public var resources: Resources?
+    /// Resource time series (t in seconds since session start) for correlating memory/CPU
+    /// with events. Optional: reports saved before it existed decode with nil.
+    public var resourceTrace: [ResourceSample]? = nil
     public var notes: [String]
+
+    public struct ResourceSample: Codable, Sendable {
+        public var t: Double
+        public var memoryMB: Double
+        public var cpuPercent: Double
+        public init(t: Double, memoryMB: Double, cpuPercent: Double) {
+            self.t = t; self.memoryMB = memoryMB; self.cpuPercent = cpuPercent
+        }
+    }
 
     public enum Kind: String, Codable, Sendable {
         case file = "benchmark-file"
@@ -118,6 +130,7 @@ public struct Report: Codable, Sendable {
         public var inputOverflowFrames = 0  // input samples dropped because the worker fell behind
         public var skippedInputMs = 0.0     // audio the worker skipped to catch up
         public var outputTrimFrames = 0     // output samples dropped to keep the queue short
+        public var trimEvents = 0           // number of trim events (A3)
         public var outputOverflowFrames = 0
         public var modelSwitches = 0
         public var droppedRows = 0          // telemetry writes skipped while the exporter held the lock (B4)
@@ -136,6 +149,7 @@ public struct Report: Codable, Sendable {
             inputOverflowFrames = try c.decodeIfPresent(Int.self, forKey: .inputOverflowFrames) ?? 0
             skippedInputMs = try c.decodeIfPresent(Double.self, forKey: .skippedInputMs) ?? 0
             outputTrimFrames = try c.decodeIfPresent(Int.self, forKey: .outputTrimFrames) ?? 0
+            trimEvents = try c.decodeIfPresent(Int.self, forKey: .trimEvents) ?? 0
             outputOverflowFrames = try c.decodeIfPresent(Int.self, forKey: .outputOverflowFrames) ?? 0
             modelSwitches = try c.decodeIfPresent(Int.self, forKey: .modelSwitches) ?? 0
             droppedRows = try c.decodeIfPresent(Int.self, forKey: .droppedRows) ?? 0

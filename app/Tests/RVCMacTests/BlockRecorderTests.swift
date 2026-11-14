@@ -127,6 +127,29 @@ final class BlockRecorderTests: XCTestCase {
         XCTAssertEqual(c.blocks, 5)
         XCTAssertEqual(c.underrunEvents, 2)
         XCTAssertEqual(c.droppedRows, 0)
+        XCTAssertEqual(c.trimEvents, 0)
         XCTAssertEqual(c.skippedInputMs, 0)
+    }
+
+    func testOldReportWithoutResourceTraceDecodes() throws {
+        let report = Report(kind: .live, createdAt: Date(), appVersion: "test",
+                            system: Report.SystemInfo(macOS: "14", machine: "m", chip: "c", memoryGB: 16,
+                                                      thermalStart: "nominal", thermalEnd: "nominal", lowPowerMode: false),
+                            model: Report.ModelInfo(name: "v", version: "1", sampleRate: 40000, indexVectors: nil),
+                            config: Report.ConfigInfo(compute: "CPU", blockMs: 100, extraMs: 500, crossfadeMs: 50,
+                                                      inputRate: 48000, outputRate: 48000, pitch: 12, indexRatio: 0.75,
+                                                      protect: 0.33, gateDB: -60),
+                            coldStart: nil, stages: [:], latency: nil, runs: [], counters: Report.Counters(),
+                            resources: nil, notes: [])
+        let data = try ReportMath.encoder().encode(report)
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj.removeValue(forKey: "resourceTrace")
+        var counters = try XCTUnwrap(obj["counters"] as? [String: Any])
+        counters.removeValue(forKey: "trimEvents")
+        obj["counters"] = counters
+        let old = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try ReportMath.decoder().decode(Report.self, from: old)
+        XCTAssertNil(decoded.resourceTrace)
+        XCTAssertEqual(decoded.counters.trimEvents, 0)
     }
 }

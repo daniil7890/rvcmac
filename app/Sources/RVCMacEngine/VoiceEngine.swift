@@ -205,6 +205,7 @@ package final class VoiceEngine {
         c.inputOverflowFrames = io.inputRing.dropped
         c.skippedInputMs = Double(skipped16.value) / 16
         c.outputTrimFrames = io.trimFrames.value
+        c.trimEvents = io.trimEvents.value
         c.outputOverflowFrames = outputOverflow.value
         c.modelSwitches = modelSwitches.value
         c.droppedRows = droppedRows.value
@@ -399,6 +400,7 @@ package final class VoiceEngine {
                 c.inputOverflowFrames = io.inputRing.dropped
                 c.skippedInputMs = Double(skipped16.value) / 16
                 c.outputTrimFrames = io.trimFrames.value
+                c.trimEvents = io.trimEvents.value
                 c.outputOverflowFrames = outputOverflow.value
                 c.modelSwitches = modelSwitches.value
                 c.droppedRows = droppedRows.value

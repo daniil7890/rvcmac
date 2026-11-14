@@ -150,6 +150,8 @@ final class AppState: ObservableObject {
     private let monitor = ResourceMonitor()
     private var timer: Timer?
     private var chartCounter = 0
+    private var lastUnderrunEvents = 0
+    private var lastTrimEvents = 0
     private var chartStart = Date()
     private let logQueue = DispatchQueue(label: "RVCMac.log", qos: .utility)
     private var deviceListener: AudioObjectPropertyListenerBlock?
@@ -293,6 +295,8 @@ final class AppState: ObservableObject {
                     }
                     engine.io.onDeviceEvent = { [weak engine] ev in Task { @MainActor in self.deviceEvent(ev, from: engine) } }
                     self.engine = engine
+                    self.lastUnderrunEvents = 0
+                    self.lastTrimEvents = 0
                     self.pushParams()
                     self.pushMute()
                     self.applyDevInputBuffer(input.id)
@@ -309,7 +313,8 @@ final class AppState: ObservableObject {
                         self.chart.removeAll()
                         self.chartStart = Date()
                         self.status = trf("Работает: %@ · %@ → %@", "\(voice.name)", "\(input.name)", "\(output.name)")
-                        self.appendLog(String(format: tr("Модели загружены за %.1f с (%@), прогрев %.0f мс. Устройства: вход %.1f мс, выход %.1f мс по данным Core Audio."),
+                        // stamped: monitor.reset() above starts the resource trace, this anchors it in wall time
+                        self.appendLogStamped(String(format: tr("Модели загружены за %.1f с (%@), прогрев %.0f мс. Устройства: вход %.1f мс, выход %.1f мс по данным Core Audio."),
                                               loadTime, computeName, warmMs, engine.io.inputLatencyMs, engine.io.outputLatencyMs))
                     } catch {
                         self.engine = nil
@@ -425,6 +430,17 @@ final class AppState: ObservableObject {
 
     private func receive(_ s: EngineStats) {
         stats = s
+        // event markers with wall-clock timestamps, checked here on main (never in the callback),
+        // so underruns/trims can be correlated with the resource trace and exports
+        let c = s.counters
+        if c.underrunEvents > lastUnderrunEvents {
+            appendLogStamped(trf("Underrun: +%@ событий (всего %@).", "\(c.underrunEvents - lastUnderrunEvents)", "\(c.underrunEvents)"))
+            lastUnderrunEvents = c.underrunEvents
+        }
+        if c.trimEvents > lastTrimEvents {
+            appendLogStamped(trf("Подрезка очереди: +%@ событий (всего %@).", "\(c.trimEvents - lastTrimEvents)", "\(c.trimEvents)"))
+            lastTrimEvents = c.trimEvents
+        }
         guard s.endToEnd.count > 0 || s.processMs > 0 else { return }
         chartCounter += 1
         chart.append(ChartPoint(id: chartCounter, t: Date().timeIntervalSince(chartStart),
@@ -617,7 +633,7 @@ final class AppState: ObservableObject {
             tr("Задержка ресемплера AVAudioConverter (единицы мс) не учитывается."),
         ]
         if counters.modelSwitches > 0 { notes.append(trf("Голос переключался во время сессии: %@ раз.", "\(counters.modelSwitches)")) }
-        let report = Report(kind: .live, createdAt: Date(), appVersion: SystemProbe.appVersion,
+        var report = Report(kind: .live, createdAt: Date(), appVersion: SystemProbe.appVersion,
                             system: SystemProbe.info(thermalStart: monitor.samples.first?.thermal ?? SystemProbe.thermalName()),
                             model: Report.ModelInfo(name: model.voice.name, version: model.voice.version, sampleRate: model.voice.sr,
                                                     indexVectors: model.voice.index?.count),
@@ -626,6 +642,7 @@ final class AppState: ObservableObject {
                             stages: ReportMath.stageDistributions(rows),
                             latency: ReportMath.latency(rows, deviceInputMs: device.inputLatencyMs, deviceOutputMs: device.outputLatencyMs),
                             runs: [run], counters: counters, resources: monitor.summary, notes: notes)
+        report.resourceTrace = monitor.samples.map { Report.ResourceSample(t: $0.t, memoryMB: $0.memoryMB, cpuPercent: $0.cpuPercent) }
         return (report, rows)
     }
 
@@ -652,7 +669,8 @@ final class AppState: ObservableObject {
                 await MainActor.run {
                     self.lastReport = snapshot.report
                     self.reportFiles = ReportStore.list()
-                    self.appendLog(trf("Отчёт сохранён: %@ (+ .csv)", "\(url.path)"))
+                    // stamped: the export marker anchors the resource trace in time
+                    self.appendLogStamped(trf("Отчёт сохранён: %@ (+ .csv)", "\(url.path)"))
                 }
             } catch {
                 await MainActor.run { self.appendLog(trf("Отчёт: %@", "\(error.localizedDescription)")) }
@@ -882,6 +900,18 @@ final class AppState: ObservableObject {
         if alert.runModal() == .alertSecondButtonReturn {
             runConverter(args + ["--unsafe-pickle"])
         }
+    }
+
+    private static let logStamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    /// Event line with a wall-clock timestamp for correlating counters with the resource trace.
+    private func appendLogStamped(_ s: String) {
+        appendLog("[\(Self.logStamp.string(from: Date()))] " + s)
     }
 
     func appendLog(_ s: String, newline: Bool = true) {

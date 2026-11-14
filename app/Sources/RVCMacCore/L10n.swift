@@ -235,6 +235,10 @@ public enum Loc {
             "Output buffer (dev): requested %@ frames, actual %@ (OSStatus %@).",
         "Входной буфер (dev): запрошено %@ фреймов, фактически %@ (OSStatus %@).":
             "Input buffer (dev): requested %@ frames, actual %@ (OSStatus %@).",
+        "Underrun: +%@ событий (всего %@).":
+            "Underrun: +%@ events (%@ total).",
+        "Подрезка очереди: +%@ событий (всего %@).":
+            "Queue trim: +%@ events (%@ total).",
         "Переполнение входа (кадры)":
             "Input overflow (frames)",
         "Пропущено входа, чтобы догнать":

@@ -66,16 +66,19 @@ package enum SystemProbe {
 /// Samples CPU %, memory and thermal state about once a second.
 package final class ResourceMonitor {
     package struct Sample {
+        /// Seconds since the monitor was reset (session start).
+        package var t: Double
         package var cpuPercent: Double
         package var memoryMB: Double
         package var thermal: String
-        package init(cpuPercent: Double, memoryMB: Double, thermal: String) {
-            self.cpuPercent = cpuPercent; self.memoryMB = memoryMB; self.thermal = thermal
+        package init(t: Double = 0, cpuPercent: Double, memoryMB: Double, thermal: String) {
+            self.t = t; self.cpuPercent = cpuPercent; self.memoryMB = memoryMB; self.thermal = thermal
         }
     }
 
     private var lastCPU = SystemProbe.cpuSeconds()
     private var lastWall = Date()
+    private var startWall = Date()
     package private(set) var samples: [Sample] = []
 
     package init() {}
@@ -84,6 +87,7 @@ package final class ResourceMonitor {
         samples.removeAll()
         lastCPU = SystemProbe.cpuSeconds()
         lastWall = Date()
+        startWall = lastWall
     }
 
     @discardableResult
@@ -94,7 +98,7 @@ package final class ResourceMonitor {
         let pct = dt > 0 ? (cpu - lastCPU) / dt * 100 : 0
         lastCPU = cpu
         lastWall = now
-        let s = Sample(cpuPercent: pct, memoryMB: SystemProbe.memoryMB(), thermal: SystemProbe.thermalName())
+        let s = Sample(t: now.timeIntervalSince(startWall), cpuPercent: pct, memoryMB: SystemProbe.memoryMB(), thermal: SystemProbe.thermalName())
         samples.append(s)
         if samples.count > 7200 { samples.removeFirst(samples.count - 7200) }
         return s

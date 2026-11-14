@@ -235,6 +235,8 @@ public enum Loc {
             "Output buffer (dev): requested %@ frames, actual %@ (OSStatus %@).",
         "Входной буфер (dev): запрошено %@ фреймов, фактически %@ (OSStatus %@).":
             "Input buffer (dev): requested %@ frames, actual %@ (OSStatus %@).",
+        "Голос %@ прогрет за %.0f мс (до передачи воркеру).":
+            "Voice %@ warmed up in %.0f ms (before handoff to the worker).",
         "Underrun: +%@ событий (всего %@).":
             "Underrun: +%@ events (%@ total).",
         "Подрезка очереди: +%@ событий (всего %@).":

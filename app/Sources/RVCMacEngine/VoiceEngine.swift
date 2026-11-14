@@ -58,6 +58,7 @@ package final class VoiceEngine {
     private let modelSwitches = AtomicInt(0)
     private let droppedRows = AtomicInt(0)
     private let nanBlocks = AtomicInt(0)
+    private let switchGen = AtomicInt(0)
     package private(set) var sessionStarted = Date()
 
     /// Worker thread callbacks; the receiver hops to the main actor itself.
@@ -105,17 +106,14 @@ package final class VoiceEngine {
         var p = params
         p.gateDB = -200
         p.bypass = false
-        var times = StageTimes()
-        let silence = [Float](repeating: 0, count: pipeline.block16)
         do {
-            for _ in 0..<blocks {
-                _ = try silence.withUnsafeBufferPointer { try pipeline.process($0, params: p, times: &times) }
-            }
+            try Warmup.run(blocks: blocks, block16: pipeline.block16,
+                           process: { buf, times in _ = try pipeline.process(buf, params: p, times: &times) },
+                           reset: { pipeline.reset() })
         } catch {
             releaser.release(pipeline)   // a failed warm-up must not deinit models on the caller (B5)
             throw error
         }
-        pipeline.reset()
         let old = prepared
         prepared = pipeline
         if let old { releaser.release(old) }
@@ -173,17 +171,45 @@ package final class VoiceEngine {
 
     /// Prepares the new voice off the worker thread (call from a background task), then hands it over.
     /// The active voice keeps playing until the worker switches at the next block boundary.
-    package func switchModel(to model: LoadedVoice) throws {
+    /// Returns the warm-up time in ms. A superseded concurrent switch drops its result.
+    @discardableResult
+    package func switchModel(to model: LoadedVoice) throws -> Double {
         guard model.config.key == currentModel.config.key else {
             throw NSError(domain: "RVCMac", code: 20, userInfo: [NSLocalizedDescriptionKey: tr("Переключение на лету требует одинаковых настроек задержки")])
         }
-        let state = try ModelState(model: model, outRate: io.outputRate)
+        let gen = switchGen.add(1)
+        // B6: warm the new voice on silence before it reaches the worker, so the first block
+        // after the swap is not cold. Off the worker; nothing is warmed or freed under modelLock.
+        let pipeline = try VoicePipeline(model: model, outRate: io.outputRate)
+        var p = params
+        p.gateDB = -200
+        p.bypass = false
+        let t0 = HostTime.now()
+        do {
+            try Warmup.run(blocks: 3, block16: pipeline.block16,
+                           process: { buf, times in _ = try pipeline.process(buf, params: p, times: &times) },
+                           reset: { pipeline.reset() })
+        } catch {
+            releaser.release(pipeline)
+            throw error
+        }
+        let warmMs = HostTime.ms(from: t0, to: HostTime.now())
+        let state = pipeline.state
+        var stale = false
         let overwritten = swapLock.withLockUnchecked { s -> ModelState? in
+            // a newer switch supersedes this one: warm-up widened the completion-order window
+            guard switchGen.value == gen else { stale = true; return nil }
             let old = s?.0
             s = (state, HostTime.now())
             return old
         }
+        if stale {
+            releaser.release(pipeline)
+            return warmMs
+        }
         if let overwritten { releaser.release(overwritten) }   // never deallocate under the lock (B5)
+        releaser.release(pipeline)   // the warmed state lives on in swapLock; the shell goes to the background
+        return warmMs
     }
 
     // MARK: - Session data

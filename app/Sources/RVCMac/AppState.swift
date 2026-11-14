@@ -466,7 +466,10 @@ final class AppState: ObservableObject {
         Task.detached(priority: .userInitiated) {
             do {
                 let loaded = try LoadedVoice(voice: voice, config: cfg, units: units)
-                try engine.switchModel(to: loaded)
+                let warmMs = try engine.switchModel(to: loaded)
+                await MainActor.run {
+                    self.appendLogStamped(trf("Голос %@ прогрет за %.0f мс (до передачи воркеру).", voice.name, warmMs))
+                }
             } catch {
                 await MainActor.run {
                     self.appendLog(trf("Переключение голоса: %@", "\(error.localizedDescription)"))

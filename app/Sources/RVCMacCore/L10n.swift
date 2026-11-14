@@ -233,6 +233,8 @@ public enum Loc {
             "Crossfade is longer than the block — %@ ms is applied (the block length).",
         "Выходной буфер (dev): запрошено %@ фреймов, фактически %@ (OSStatus %@).":
             "Output buffer (dev): requested %@ frames, actual %@ (OSStatus %@).",
+        "Входной буфер (dev): запрошено %@ фреймов, фактически %@ (OSStatus %@).":
+            "Input buffer (dev): requested %@ frames, actual %@ (OSStatus %@).",
         "Переполнение входа (кадры)":
             "Input overflow (frames)",
         "Пропущено входа, чтобы догнать":

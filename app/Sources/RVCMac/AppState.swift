@@ -295,6 +295,7 @@ final class AppState: ObservableObject {
                     self.engine = engine
                     self.pushParams()
                     self.pushMute()
+                    self.applyDevInputBuffer(input.id)
                     self.applyDevOutputBuffer(output.id)
                     do {
                         try engine.start(input: input.id, output: output.id)
@@ -363,22 +364,34 @@ final class AppState: ObservableObject {
         status = tr("Остановлено")
     }
 
-    /// Dev-only: force the output device buffer size (UserDefaults key "outputBufferFrames")
-    /// so A2/A3 can be checked live on 64/128-frame buffers. Unset by default: no change.
-    /// The property is device-global and is NOT restored on stop; a Bool written via
-    /// `defaults` bridges to 1, which the driver clamps (visible in the log).
+    /// Dev-only: force the device buffer size (UserDefaults keys "inputBufferFrames" /
+    /// "outputBufferFrames") so A2/A3 can be checked live on 64/128-frame buffers.
+    /// Unset by default: no change. The property is device-global and is NOT restored on
+    /// stop; a Bool written via `defaults` bridges to 1, which the driver clamps (in the log).
     private func applyDevOutputBuffer(_ device: AudioDeviceID) {
         guard let want = defaults.object(forKey: "outputBufferFrames") as? Int, want > 0 else { return }
+        let (st, actual, gst) = Self.setBufferFrames(device, scope: kAudioObjectPropertyScopeOutput, want: want)
+        let actualText = gst == noErr ? "\(actual)" : "n/a (get \(gst))"
+        appendLog(trf("Выходной буфер (dev): запрошено %@ фреймов, фактически %@ (OSStatus %@).", "\(want)", actualText, "\(st)"))
+    }
+
+    private func applyDevInputBuffer(_ device: AudioDeviceID) {
+        guard let want = defaults.object(forKey: "inputBufferFrames") as? Int, want > 0 else { return }
+        let (st, actual, gst) = Self.setBufferFrames(device, scope: kAudioObjectPropertyScopeInput, want: want)
+        let actualText = gst == noErr ? "\(actual)" : "n/a (get \(gst))"
+        appendLog(trf("Входной буфер (dev): запрошено %@ фреймов, фактически %@ (OSStatus %@).", "\(want)", actualText, "\(st)"))
+    }
+
+    private static func setBufferFrames(_ device: AudioDeviceID, scope: AudioObjectPropertyScope, want: Int) -> (OSStatus, UInt32, OSStatus) {
         var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize,
-                                              mScope: kAudioObjectPropertyScopeOutput,
+                                              mScope: scope,
                                               mElement: kAudioObjectPropertyElementMain)
         var frames = UInt32(clamping: want)
         let st = AudioObjectSetPropertyData(device, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &frames)
         var actual: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         let gst = AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &actual)
-        let actualText = gst == noErr ? "\(actual)" : "n/a (get \(gst))"
-        appendLog(trf("Выходной буфер (dev): запрошено %@ фреймов, фактически %@ (OSStatus %@).", "\(want)", actualText, "\(st)"))
+        return (st, actual, gst)
     }
 
     private func restart() {

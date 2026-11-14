@@ -232,6 +232,19 @@ Underrun (A2): частичный буфер рамится к нулю норм
 
 clicks — среднее на файл; bound_clicks/bound_jumps — сумма по 10 файлам; Δ — максимальная пофайловая разность (f0_wrap и jitter в центах, gain в дБ). Результаты: `reports/quality-candidate-clicks/gate-seed{1,2}-{cpu,ane-gpu}/results.json`.
 
+## deviceInputMs 51.2: раскладка по составляющим (14.11.2026)
+
+Вход живой сессии b80/64 — MacBook Air Microphone, 44.1 кГц. deviceInputMs 51.247 мс = 2260 кадров; раскладка по свойствам Core Audio (опрос устройства):
+
+| Составляющая | Кадры | мс (44.1 кГц) | Доля |
+|---|---|---|---|
+| kAudioDevicePropertyLatency (input) | 0 | 0.00 | 0% |
+| kAudioDevicePropertySafetyOffset (input) | 50 | 1.13 | 2.2% |
+| kAudioStreamPropertyLatency (сумма по стримам) | 2210 | 50.11 | 97.8% |
+| Итого | 2260 | 51.25 | 100% |
+
+2260 / 44100 × 1000 = 51.247 мс — точное совпадение с deviceInputMs отчёта. ~98% задержки — аппаратная stream latency встроенного микрофона (тракт АЦП/DSP): она не зависит от размера IO-буфера и не убирается настройками. Размер IO-буфера входа (на момент опроса 512 кадров = 11.6 мс) в reported latency не входит. Добавлен dev-флаг `inputBufferFrames` (UserDefaults, по образцу `outputBufferFrames`, scope input, лог фактического размера, по умолчанию не задан) — он позволяет проверить поведение колбэков на малых буферах, но deviceInputMs не уменьшит. deviceInput — ~20% e2e (51.2 из 258.1 мс).
+
 ## Живая сессия b80, 64-фреймовый буфер, 14.11.2026
 
 Конфигурация: CPU, gaechkatm, gate −70, вход 44.1 кГц / выход BlackHole 48 кГц, b80_e500_c50, буфер выхода 64 кадра. Длительность 13.4 мин (803.6 с), 10036 блоков. Источник: `reports/live-20261114-090907-gaechkatm-b80.{csv,json}`.

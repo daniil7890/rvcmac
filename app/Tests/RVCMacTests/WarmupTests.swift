@@ -42,6 +42,32 @@ final class WarmupTests: XCTestCase {
         XCTAssertFalse(resetCalled)
     }
 
+    func testShouldContinueStopsBetweenBlocks() {
+        var calls = 0
+        var resetCalled = false
+        XCTAssertThrowsError(try Warmup.run(blocks: 5, block16: 16,
+                                            shouldContinue: { calls < 2 },
+                                            process: { _, _ in calls += 1 },
+                                            reset: { resetCalled = true })) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(calls, 2)
+        XCTAssertFalse(resetCalled)
+    }
+
+    func testShouldContinueCancelsBeforeFirstBlock() {
+        var calls = 0
+        var resetCalled = false
+        XCTAssertThrowsError(try Warmup.run(blocks: 3, block16: 16,
+                                            shouldContinue: { false },
+                                            process: { _, _ in calls += 1 },
+                                            reset: { resetCalled = true })) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(calls, 0)
+        XCTAssertFalse(resetCalled)
+    }
+
     func testFirstBlockAfterWarmupIsNotCold() throws {
         // cold-model simulation: the first inference is slow, later ones fast. The warmup
         // must absorb the cold call so the first real block after the swap is fast.

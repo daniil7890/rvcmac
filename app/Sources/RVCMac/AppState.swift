@@ -462,17 +462,22 @@ final class AppState: ObservableObject {
             return
         }
         let units = compute.units
+        let source = engine
         appendLog(trf("Готовлю голос %@…", "\(voice.name)"))
         Task.detached(priority: .userInitiated) {
             do {
                 let loaded = try LoadedVoice(voice: voice, config: cfg, units: units)
                 let warmMs = try engine.switchModel(to: loaded)
                 await MainActor.run {
+                    // warmMs == 0: superseded/cancelled; after Stop the log would be noise
+                    guard warmMs > 0, EngineSession.isCurrent(source, engine: self.engine) else { return }
                     self.appendLogStamped(trf("Голос %@ прогрет за %.0f мс (до передачи воркеру).", voice.name, warmMs))
                 }
             } catch {
                 await MainActor.run {
                     self.appendLog(trf("Переключение голоса: %@", "\(error.localizedDescription)"))
+                    // a failure after Stop must not overwrite the user's pick with a dead engine's voice
+                    guard EngineSession.isCurrent(source, engine: self.engine) else { return }
                     self.revertVoiceSelection(to: engine)
                 }
             }

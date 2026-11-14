@@ -178,17 +178,28 @@ package final class VoiceEngine {
             throw NSError(domain: "RVCMac", code: 20, userInfo: [NSLocalizedDescriptionKey: tr("Переключение на лету требует одинаковых настроек задержки")])
         }
         let gen = switchGen.add(1)
+        // a newer switch already superseded this one: skip the Core ML build entirely
+        guard switchGen.value == gen else { return 0 }
         // B6: warm the new voice on silence before it reaches the worker, so the first block
         // after the swap is not cold. Off the worker; nothing is warmed or freed under modelLock.
         let pipeline = try VoicePipeline(model: model, outRate: io.outputRate)
+        // early exit before the warm-up: superseded while the pipeline was being built
+        guard switchGen.value == gen else {
+            releaser.release(pipeline)
+            return 0
+        }
         var p = params
         p.gateDB = -200
         p.bypass = false
         let t0 = HostTime.now()
         do {
             try Warmup.run(blocks: 3, block16: pipeline.block16,
+                           shouldContinue: { switchGen.value == gen },
                            process: { buf, times in _ = try pipeline.process(buf, params: p, times: &times) },
                            reset: { pipeline.reset() })
+        } catch is CancellationError {
+            releaser.release(pipeline)
+            return 0
         } catch {
             releaser.release(pipeline)
             throw error

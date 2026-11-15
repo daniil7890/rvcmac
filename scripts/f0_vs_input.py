@@ -9,11 +9,16 @@ Usage:
 --ref = input speech for the absolute check (pitch = configured pitch);
 --ref = another output with --pitch 0 for zero / inter-seed checks.
 Needs the converter venv (librosa/scipy); PYIN_CACHE speeds up repeated runs.
+
+The lag search is 0..200 ms. A result with lag_at_boundary=true (lag 0 or 200 ms) may be
+clipped: for pitch != 0 do not interpret it without widening the range (lag 0 is expected
+for self-comparisons). A warning is printed to stderr.
 """
 import argparse
 import importlib.util
 import json
 import os
+import sys
 
 import numpy as np
 
@@ -49,7 +54,7 @@ def compare(qg, wav, ref, pitch):
     _, lag, e = best
     w = e - 1200 * np.round(e / 1200)
     ae = np.abs(e)
-    return dict(n=int(len(e)), lag_ms=lag * 10,
+    return dict(n=int(len(e)), lag_ms=lag * 10, lag_at_boundary=bool(lag == 0 or lag == 20),
                 median_abs=float(np.median(ae)), mean_abs=float(ae.mean()),
                 p95_abs=float(np.percentile(ae, 95)),
                 gt50=float((ae > 50).mean()), gt100=float((ae > 100).mean()),
@@ -71,6 +76,9 @@ def main():
     res['wav'] = o.wav
     res['ref'] = o.ref
     res['pitch'] = o.pitch
+    if res.get('lag_at_boundary'):
+        print(f"WARNING: lag {res['lag_ms']} ms is at the search boundary (0..200 ms); "
+              f"the alignment may be clipped", file=sys.stderr)
     if o.json:
         os.makedirs(os.path.dirname(o.json), exist_ok=True)
         json.dump(res, open(o.json, 'w'), indent=1)

@@ -73,13 +73,13 @@ MacBook Air M2, «Neural Engine + GPU», выход в BlackHole:
 ## Как это устроено
 
 ```
-микрофон ─► Core Audio ─► 16 кГц ─► ContentVec (Core ML, ANE) ─► index (Accelerate) ─┐
+микрофон ─► Core Audio ─► 16 кГц ─► ContentVec (Core ML, GPU) ─► index (Accelerate) ─┐
                                └──► FCPE (Core ML, GPU, fp32) ─► f0 / NSF-синусоида ──┤
                                                 RVC-синтезатор (Core ML, ANE) ◄────────┘
                                                 └─► ресемплинг ─► SOLA-кроссфейд ─► выход
 ```
 
-- **Конвертер** (`converter/convert.py`, Python) переводит RVC-модель, ContentVec и FCPE в `.mlpackage`. Размеры фиксируются под выбранную задержку, чтобы модели шли на Neural Engine. Перед сохранением конвертер сверяет результат Core ML с PyTorch.
+- **Конвертер** (`converter/convert.py`, Python) переводит RVC-модель, ContentVec и FCPE в `.mlpackage`. Размеры фиксируются под выбранную задержку (статические формы тензоров). Перед сохранением конвертер сверяет результат Core ML с PyTorch.
 - **Приложение** (`app/`, Swift) берёт и выдаёт звук через HAL IOProc. В аудиоколбэках нет локов и аллокаций: обмен идёт через lock-free кольца на C11 atomics (`RVCMacRT`). Инференс работает в отдельном потоке. Поиск по `.index` точный, через `cblas_sgemm`. Склейка блоков — SOLA, как в RVC WebUI и w-okada.
 - **Первый запуск.** Скрипты конвертера лежат внутри `RVCMac.app`. Python скачивается из [python-build-standalone](https://github.com/astral-sh/python-build-standalone), его SHA-256 закреплён в сборке и проверяется после скачивания. Библиотеки ставятся в отдельное окружение в папке данных.
 

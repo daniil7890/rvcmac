@@ -73,13 +73,13 @@ The measurement method and the audio path audit are in [docs/AUDIT.md](docs/AUDI
 ## How it works
 
 ```
-mic ─► Core Audio ─► 16 kHz ─► ContentVec (Core ML, ANE) ─► index (Accelerate) ─┐
+mic ─► Core Audio ─► 16 kHz ─► ContentVec (Core ML, GPU) ─► index (Accelerate) ─┐
                           └──► FCPE (Core ML, GPU, fp32) ─► f0 / NSF sine ──────┤
                                           RVC synthesizer (Core ML, ANE) ◄──────┘
                                           └─► resampling ─► SOLA crossfade ─► output
 ```
 
-- **Converter** (`converter/convert.py`, Python) turns an RVC model, ContentVec and FCPE into `.mlpackage` files. Shapes are fixed for the chosen latency so the models run on the Neural Engine. Before saving, the converter checks the Core ML output against PyTorch.
+- **Converter** (`converter/convert.py`, Python) turns an RVC model, ContentVec and FCPE into `.mlpackage` files. Shapes are fixed for the chosen latency (static tensor shapes). Before saving, the converter checks the Core ML output against PyTorch.
 - **App** (`app/`, Swift) captures and plays audio through HAL IOProcs. The audio callbacks take no locks and allocate nothing: data goes through lock-free rings on C11 atomics (`RVCMacRT`). Inference runs on its own thread. The `.index` search is exact, via `cblas_sgemm`. Blocks are joined with SOLA, as in RVC WebUI and w-okada.
 - **First run.** The converter scripts ship inside `RVCMac.app`. Python is downloaded from [python-build-standalone](https://github.com/astral-sh/python-build-standalone); its SHA-256 is pinned in the build and checked after download. The libraries go into a separate environment in the data folder.
 

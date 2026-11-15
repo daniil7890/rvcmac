@@ -72,9 +72,11 @@ def clicks(x):
         res[k]=[(int(c[int(np.argmax(r[c]))]),float(r[c].max()),float(e[c].max())) for c in ev]
     return res
 
-def boundary(x,offset=0):
-    """Jump ratio at positions offset+k*4800: |x[b]-x[b-1]| / median(|diff|, b+-240 excl. +-4), amp floor 1e-3."""
-    d=np.abs(np.diff(x,prepend=x[0])); pos=np.arange(BLOCK+offset,len(x)-300,BLOCK); r=[]
+def boundary(x,offset=0,block=None):
+    """Jump ratio at positions offset+k*block: |x[b]-x[b-1]| / median(|diff|, b+-240 excl. +-4), amp floor 1e-3.
+    block defaults to BLOCK (100 ms); pass the actual block size for other configurations."""
+    block=BLOCK if block is None else block
+    d=np.abs(np.diff(x,prepend=x[0])); pos=np.arange(block+offset,len(x)-300,block); r=[]
     for b in pos:
         win=np.r_[d[b-240:b-4],d[b+5:b+241]]; med=np.median(win)+EPS
         r.append(d[b]/med if d[b]>=AMP_FLOOR else 0.0)
@@ -132,16 +134,17 @@ def melspec(x):
     return 10*np.log10(np.maximum(S,1e-10))
 
 def one(arg):
-    root,a,b,name,cache,adir,bdir=arg
+    root,a,b,name,cache,adir,bdir,block_ms=arg
+    blk=int(block_ms)*48   # samples per block at SR=48000
     inp=load(f'{root}/TestAudio/{name}.wav'); ein=env(inp)
     c_path=f'{cache}/{name}.npz'
-    res={'name':name,'in_len':len(inp),'modes':{}}
+    res={'name':name,'in_len':len(inp),'block_ms':int(block_ms),'modes':{}}
     # control
-    ci=clicks(inp); pos_in,rb_in=boundary(inp)
+    ci=clicks(inp); pos_in,rb_in=boundary(inp,block=blk)
     res['input']={'clicks':len(ci[K]),'clicks_K':{str(k):len(v) for k,v in ci.items()},'bound_clicks':int(sum(any(abs(e[0]-p)<=BOUND_W for p in pos_in) for e in ci[K])),'bound_jumps':int((rb_in>=JUMP_K).sum()),'rms_db':float(db((inp**2).mean())),'dur_s':len(inp)/SR}
     f_in,v_in=pyin(inp,FMIN,FMAX); rms_in=frames_rms(inp); active=db(rms_in**2)>=ACTIVE_DB
     res['input']['active_frac']=float(active.mean()); res['input']['active_db']=float(db((rms_in[active]**2).mean()))
-    nb=len(inp)*16000//SR//1600-1; expected=nb*BLOCK
+    nb=len(inp)*16000//SR//1600-1; expected=nb*blk
     al={}; mels={}; outs={}
     S_in=melspec(inp)
     raw={m:load(f'{root}/{d}/{name}/output.wav') for m,d in ((a,adir),(b,bdir))}
@@ -151,7 +154,7 @@ def one(arg):
         x=raw[m]; outs[m]=x
         ex=env(x); lag,conf=best_lag(ein,ex,LAG_RANGE[0],LAG_RANGE[1]); lag_s=max(0,lag*ENV_HOP)
         lags,ts=windowed_lag(ein,ex,lag)
-        c=clicks(x); pos,rb=boundary(x); posm,rbm=boundary(x,offset=BLOCK//2)
+        c=clicks(x); pos,rb=boundary(x,block=blk); posm,rbm=boundary(x,offset=blk//2,block=blk)
         al_x=x[lag_s:]; n=min(len(al_x),len(inp)); al[m]=al_x
         r=frames_rms(al_x); N=min(len(r),len(active)); act=active[:N]; r=r[:N]; rdb=db(r[act]**2)
         ga=(db(r**2)<GAP_OUT_DB)&(db(rms_in[:N]**2)>GAP_IN_DB)
@@ -218,9 +221,9 @@ def decide(results,a,b):
     return out,allpass
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--root',required=True); p.add_argument('--a',default='cpu'); p.add_argument('--b',default='ane-gpu'); p.add_argument('--out',required=True); p.add_argument('--jobs',type=int,default=4); p.add_argument('--adir',required=True); p.add_argument('--bdir',required=True); o=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--root',required=True); p.add_argument('--a',default='cpu'); p.add_argument('--b',default='ane-gpu'); p.add_argument('--out',required=True); p.add_argument('--jobs',type=int,default=4); p.add_argument('--adir',required=True); p.add_argument('--bdir',required=True); p.add_argument('--block-ms',type=int,default=100,help='block size of the compared outputs; sets the boundary grid (default 100)'); o=p.parse_args()
     os.makedirs(o.out,exist_ok=True); names=sorted(f[:-4] for f in os.listdir(f'{o.root}/TestAudio') if f.endswith('.wav'))
-    with ProcessPoolExecutor(o.jobs) as ex: res=list(ex.map(one,[(o.root,o.a,o.b,n,o.out,o.adir,o.bdir) for n in names]))
+    with ProcessPoolExecutor(o.jobs) as ex: res=list(ex.map(one,[(o.root,o.a,o.b,n,o.out,o.adir,o.bdir,o.block_ms) for n in names]))
     dec,ok=decide(res,o.a,o.b)
     json.dump(dict(results=res,decision=dec,passed=bool(ok)),open(f'{o.out}/results.json','w'),indent=1)
     print('PASS' if ok else 'FAIL')

@@ -2,7 +2,12 @@ import CoreML
 import Foundation
 
 // Dumps the per-device operation distribution of a Core ML model (MLComputePlan, macOS 14+).
-// Usage: swift compute_plan.swift <model.mlpackage> [units: all|ane|gpu|cpu]
+// Usage: swift compute_plan.swift <model.mlmodelc> [units: all|ane|gpu|cpu]
+// Note: this is the static compile plan (preferred device), not guaranteed runtime placement.
+guard CommandLine.arguments.count > 1 else {
+    print("usage: swift compute_plan.swift <model.mlmodelc> [units: all|ane|gpu|cpu]")
+    exit(1)
+}
 let path = CommandLine.arguments[1]
 let unitsArg = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "all"
 let cfg = MLModelConfiguration()
@@ -15,9 +20,9 @@ default: cfg.computeUnits = .all
 let plan = try await MLComputePlan.load(contentsOf: URL(fileURLWithPath: path), configuration: cfg)
 var counts: [String: Int] = [:]
 var byOp: [String: [String: Int]] = [:]
-func deviceName(_ d: MLComputeDevice?) -> String {
-    guard let d else { return "unknown" }
-    switch d {
+func deviceName(_ usage: MLComputePlan.DeviceUsage?) -> String {
+    guard let usage else { return "no_usage" }
+    switch usage.preferred {
     case .cpu: return "CPU"
     case .gpu: return "GPU"
     case .neuralEngine: return "ANE"
@@ -26,7 +31,7 @@ func deviceName(_ d: MLComputeDevice?) -> String {
 }
 func walkBlock(_ b: MLModelStructure.Program.Block) {
     for op in b.operations {
-        let name = deviceName(plan.deviceUsage(for: op)?.preferred)
+        let name = deviceName(plan.deviceUsage(for: op))
         counts[name, default: 0] += 1
         byOp[op.operatorName, default: [:]][name, default: 0] += 1
         for sub in op.blocks { walkBlock(sub) }

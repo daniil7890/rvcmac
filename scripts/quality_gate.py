@@ -143,6 +143,10 @@ def one(arg):
     # control
     ci=clicks(inp); pos_in,rb_in=boundary(inp,block=blk_a)
     res['input']={'clicks':len(ci[K]),'clicks_K':{str(k):len(v) for k,v in ci.items()},'bound_clicks':int(sum(any(abs(e[0]-p)<=BOUND_W for p in pos_in) for e in ci[K])),'bound_jumps':int((rb_in>=JUMP_K).sum()),'rms_db':float(db((inp**2).mean())),'dur_s':len(inp)/SR}
+    if blk_b!=blk_a:
+        pos_in_b,rb_in_b=boundary(inp,block=blk_b)
+        res['input']['bound_clicks_b']=int(sum(any(abs(e[0]-p)<=BOUND_W for p in pos_in_b) for e in ci[K]))
+        res['input']['bound_jumps_b']=int((rb_in_b>=JUMP_K).sum())
     f_in,v_in=pyin(inp,FMIN,FMAX); rms_in=frames_rms(inp); active=db(rms_in**2)>=ACTIVE_DB
     res['input']['active_frac']=float(active.mean()); res['input']['active_db']=float(db((rms_in[active]**2).mean()))
     # expected output length: one block per block_ms of input (block16 = block_ms*16 samples at 16 kHz)
@@ -230,7 +234,9 @@ def main():
     os.makedirs(o.out,exist_ok=True); names=sorted(f[:-4] for f in os.listdir(f'{o.root}/TestAudio') if f.endswith('.wav'))
     with ProcessPoolExecutor(o.jobs) as ex: res=list(ex.map(one,[(o.root,o.a,o.b,n,o.out,o.adir,o.bdir,o.block_ms,bms) for n in names]))
     dec,ok=decide(res,o.a,o.b)
-    json.dump(dict(results=res,decision=dec,passed=bool(ok)),open(f'{o.out}/results.json','w'),indent=1)
+    cross=bms!=o.block_ms
+    json.dump(dict(results=res,decision=dec,passed=bool(ok),cross_config=cross),open(f'{o.out}/results.json','w'),indent=1)
     print('PASS' if ok else 'FAIL')
+    if cross: print('NOTE: cross-config comparison (different block sizes) — the difference verdict is NOT a gate; use absolute per-file thresholds')
     for d in dec: print({k:(round(v,3) if isinstance(v,float) else v) for k,v in d.items() if k!='per_file_d'})
 if __name__=='__main__': main()

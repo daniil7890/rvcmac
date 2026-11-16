@@ -71,9 +71,9 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var ui = ContentUI()
 
-    private let blockOptions = [80, 100, 120, 150, 200, 250, 300, 350, 400, 500]
-    private let extraOptions = [200, 300, 500, 750, 1000]
-    private let crossfadeOptions = [50, 100, 150, 200]
+    private let blockOptions = LatencyOptions.block
+    private let extraOptions = LatencyOptions.extra
+    private let crossfadeOptions = LatencyOptions.crossfade
 
     var body: some View {
         VStack(spacing: 0) {

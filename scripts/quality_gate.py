@@ -134,23 +134,27 @@ def melspec(x):
     return 10*np.log10(np.maximum(S,1e-10))
 
 def one(arg):
-    root,a,b,name,cache,adir,bdir,block_ms=arg
-    blk=int(block_ms)*48   # samples per block at SR=48000
+    root,a,b,name,cache,adir,bdir,block_ms,b_block_ms=arg
+    blk_a=int(block_ms)*48   # samples per block at SR=48000
+    blk_b=int(b_block_ms)*48
     inp=load(f'{root}/TestAudio/{name}.wav'); ein=env(inp)
     c_path=f'{cache}/{name}.npz'
-    res={'name':name,'in_len':len(inp),'block_ms':int(block_ms),'modes':{}}
+    res={'name':name,'in_len':len(inp),'block_ms':int(block_ms),'b_block_ms':int(b_block_ms),'modes':{}}
     # control
-    ci=clicks(inp); pos_in,rb_in=boundary(inp,block=blk)
+    ci=clicks(inp); pos_in,rb_in=boundary(inp,block=blk_a)
     res['input']={'clicks':len(ci[K]),'clicks_K':{str(k):len(v) for k,v in ci.items()},'bound_clicks':int(sum(any(abs(e[0]-p)<=BOUND_W for p in pos_in) for e in ci[K])),'bound_jumps':int((rb_in>=JUMP_K).sum()),'rms_db':float(db((inp**2).mean())),'dur_s':len(inp)/SR}
     f_in,v_in=pyin(inp,FMIN,FMAX); rms_in=frames_rms(inp); active=db(rms_in**2)>=ACTIVE_DB
     res['input']['active_frac']=float(active.mean()); res['input']['active_db']=float(db((rms_in[active]**2).mean()))
-    nb=len(inp)*16000//SR//1600-1; expected=nb*blk
+    # expected output length: one block per block_ms of input (block16 = block_ms*16 samples at 16 kHz)
+    nframes=len(inp)*16000//SR
+    expected={a:(nframes//(int(block_ms)*16)-1)*blk_a, b:(nframes//(int(b_block_ms)*16)-1)*blk_b}
     al={}; mels={}; outs={}
     S_in=melspec(inp)
     raw={m:load(f'{root}/{d}/{name}/output.wav') for m,d in ((a,adir),(b,bdir))}
     pf={m:pyin(raw[m],2*FMIN,2*FMAX) for m in (a,b)}
     f0_lag=f0_common_lag(f_in,v_in,[pf[a],pf[b]]); res['f0_lag_ms']=f0_lag*10
     for m in (a,b):
+        blk=blk_a if m==a else blk_b
         x=raw[m]; outs[m]=x
         ex=env(x); lag,conf=best_lag(ein,ex,LAG_RANGE[0],LAG_RANGE[1]); lag_s=max(0,lag*ENV_HOP)
         lags,ts=windowed_lag(ein,ex,lag)
@@ -184,7 +188,7 @@ def one(arg):
         fr=np.where(both)[0]; worstf=sorted(((int(i),float(err[i])) for i in fr),key=lambda z:-abs(z[1]))[:5]
         mels[m]=melspec(al_x)
         L=min(mels[m].shape[1],S_in.shape[1],len(active)); act2=active[:L]
-        res['modes'][m]={'out_len':len(x),'expected_len':expected,'len_err':len(x)-expected,'lag_ms':lag_s/48,'lag_conf':conf,
+        res['modes'][m]={'out_len':len(x),'expected_len':expected[m],'len_err':len(x)-expected[m],'lag_ms':lag_s/48,'lag_conf':conf,
           'lag_win_n':len(lags),'lag_span_ms':float((lags.max()-lags.min())) if len(lags) else None,'lag_std_ms':float(lags.std()) if len(lags) else None,
           'gaps':gaps,'f0_lag_ms':f0_lag*10,
           'clicks':len(c[K]),'clicks_K':{str(k):len(v) for k,v in c.items()},
@@ -221,9 +225,10 @@ def decide(results,a,b):
     return out,allpass
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--root',required=True); p.add_argument('--a',default='cpu'); p.add_argument('--b',default='ane-gpu'); p.add_argument('--out',required=True); p.add_argument('--jobs',type=int,default=4); p.add_argument('--adir',required=True); p.add_argument('--bdir',required=True); p.add_argument('--block-ms',type=int,default=100,help='block size of the compared outputs; sets the boundary grid (default 100)'); o=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--root',required=True); p.add_argument('--a',default='cpu'); p.add_argument('--b',default='ane-gpu'); p.add_argument('--out',required=True); p.add_argument('--jobs',type=int,default=4); p.add_argument('--adir',required=True); p.add_argument('--bdir',required=True); p.add_argument('--block-ms',type=int,default=100,help='block size of mode A outputs; sets its boundary grid and expected length (default 100)'); p.add_argument('--b-block-ms',type=int,default=None,help='block size of mode B outputs (default: same as --block-ms)'); o=p.parse_args()
+    bms=o.b_block_ms if o.b_block_ms is not None else o.block_ms
     os.makedirs(o.out,exist_ok=True); names=sorted(f[:-4] for f in os.listdir(f'{o.root}/TestAudio') if f.endswith('.wav'))
-    with ProcessPoolExecutor(o.jobs) as ex: res=list(ex.map(one,[(o.root,o.a,o.b,n,o.out,o.adir,o.bdir,o.block_ms) for n in names]))
+    with ProcessPoolExecutor(o.jobs) as ex: res=list(ex.map(one,[(o.root,o.a,o.b,n,o.out,o.adir,o.bdir,o.block_ms,bms) for n in names]))
     dec,ok=decide(res,o.a,o.b)
     json.dump(dict(results=res,decision=dec,passed=bool(ok)),open(f'{o.out}/results.json','w'),indent=1)
     print('PASS' if ok else 'FAIL')

@@ -32,6 +32,40 @@ enum ConverterSetup {
 
     static var isReady: Bool { FileManager.default.isExecutableFile(atPath: RVCMacPaths.python.path) }
 
+    private static let certifiLock = NSLock()
+    private static var certifiCache: String?
+
+    /// The venv's certifi CA bundle, queried once and cached. Standalone Python
+    /// (python-build-standalone) ships no CA bundle, so urllib inside the converter
+    /// fails TLS unless pointed at certifi; pip/requests carry their own copy.
+    static func certifiBundle() -> String? {
+        certifiLock.lock(); defer { certifiLock.unlock() }
+        if let cached = certifiCache { return cached }
+        guard isReady else { return nil }
+        let p = Process()
+        p.executableURL = RVCMacPaths.python
+        p.arguments = ["-c", "import certifi; print(certifi.where())"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
+        let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
+        certifiCache = path
+        return path
+    }
+
+    /// Shell variables don't reach an app launched from Finder, so set the CA bundle
+    /// explicitly for child processes. An inherited value (e.g. a corporate CA) wins.
+    static func applyCertifi(to env: inout [String: String]) {
+        guard let bundle = certifiBundle() else { return }
+        if env["SSL_CERT_FILE"] == nil { env["SSL_CERT_FILE"] = bundle }
+        if env["REQUESTS_CA_BUNDLE"] == nil { env["REQUESTS_CA_BUNDLE"] = bundle }
+    }
+
     /// Removes the environment (for a clean reinstall). Converted voices are kept.
     static func remove() throws {
         let fm = FileManager.default
@@ -123,6 +157,7 @@ enum ConverterSetup {
         env["PYTHONUNBUFFERED"] = "1"
         env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
         env["PIP_PROGRESS_BAR"] = "off"
+        applyCertifi(to: &env)
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe

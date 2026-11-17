@@ -863,6 +863,9 @@ final class AppState: ObservableObject {
         // keep models, caches and downloaded weights in the app's data folder (easy to find and delete)
         env["RVCMAC_HOME"] = RVCMacPaths.home.path
         env["HF_HOME"] = RVCMacPaths.home.appendingPathComponent("cache/huggingface").path
+        // standalone Python has no CA bundle; without this urllib TLS fails in the app
+        // even though pip/requests work (shell variables don't reach a Finder launch)
+        ConverterSetup.applyCertifi(to: &env)
         p.environment = env
         let pipe = Pipe()
         p.standardOutput = pipe

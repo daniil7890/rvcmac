@@ -294,15 +294,64 @@ def _sha256(path):
     return h.hexdigest()
 
 
+def _fcpe_source(source, path, sha):
+    log(f"  fcpe weights: source={source} sha256={sha} path={path}")
+
+
 def find_fcpe_weights():
-    if os.path.exists(OKADA_FCPE):
-        return OKADA_FCPE
+    """Returns (path, source). Every accepted file is verified against the pin;
+    a mismatching file is never deleted — earlier benchmarks may have been built with it."""
     cache = os.path.join(RVCMAC_HOME, "cache", "fcpe.pt")
+    if os.path.exists(OKADA_FCPE):
+        sha = _sha256(OKADA_FCPE)
+        if sha == FCPE_SHA256:
+            _fcpe_source("okada", OKADA_FCPE, sha)
+            return OKADA_FCPE, "okada"
+        if os.environ.get("RVCMAC_ALLOW_UNVERIFIED_FCPE") == "1":
+            log(f"  WARNING: using unverified dev file {OKADA_FCPE} sha={sha} (RVCMAC_ALLOW_UNVERIFIED_FCPE=1)")
+            return OKADA_FCPE, "okada-unverified"
+        raise SystemExit(
+            "ERROR: the OKADA dev fcpe.pt does not match the pinned checksum — it may be a different checkpoint.\n"
+            f"  path:             {OKADA_FCPE}\n"
+            f"  expected SHA-256: {FCPE_SHA256}\n"
+            f"  got:              {sha}\n"
+            "The file is left untouched: earlier benchmarks may have been built with it.\n"
+            "To use it anyway, re-run with RVCMAC_ALLOW_UNVERIFIED_FCPE=1.\n"
+            "Otherwise move it aside so the pinned weights are used instead."
+        )
     if os.path.exists(cache):
-        if _sha256(cache) == FCPE_SHA256:
-            return cache
-        log(f"  cached {cache} is corrupt (SHA-256 mismatch) — deleting and re-downloading")
-        os.remove(cache)
+        sha = _sha256(cache)
+        if sha == FCPE_SHA256:
+            _fcpe_source("cache", cache, sha)
+            return cache, "cache"
+        kept = f"{cache}.unverified-{sha[:8]}"
+        n = 1
+        while os.path.exists(kept):  # never overwrite an earlier quarantined file
+            kept = f"{cache}.unverified-{sha[:8]}-{n}"
+            n += 1
+        os.replace(cache, kept)
+        raise SystemExit(
+            "ERROR: cached fcpe.pt does not match the pinned SHA-256 — conversion stopped, nothing deleted.\n"
+            f"  expected SHA-256: {FCPE_SHA256}\n"
+            f"  got:              {sha}\n"
+            f"  kept as:          {kept}\n"
+            "It may be a different checkpoint used by earlier benchmarks. Inspect it and decide:\n"
+            "re-run the converter to download the pinned weights, or place a file with the\n"
+            f"expected SHA-256 at:\n  {cache}"
+        )
+    # torchfcpe ships the same pinned asset; use it instead of downloading when present
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("torchfcpe")
+        pip_path = os.path.join(os.path.dirname(spec.origin), "assets", "fcpe_c_v001.pt") if spec and spec.origin else None
+    except (ImportError, ValueError):
+        pip_path = None
+    if pip_path and os.path.exists(pip_path):
+        sha = _sha256(pip_path)
+        if sha == FCPE_SHA256:
+            _fcpe_source("pip", pip_path, sha)
+            return pip_path, "pip"
+        log(f"  pip asset {pip_path} has SHA-256 {sha}, expected {FCPE_SHA256} — ignoring it")
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     step("Downloading FCPE weights")
     for url in FCPE_URLS:
@@ -322,7 +371,8 @@ def find_fcpe_weights():
                 f"and place the file at:\n  {cache}"
             )
         os.replace(cache + ".part", cache)
-        return cache
+        _fcpe_source("download", cache, got)
+        return cache, "download"
     raise SystemExit(
         "ERROR: could not obtain FCPE weights (fcpe.pt).\n"
         f"Download it manually from:\n  {FCPE_URLS[0]}\n"
@@ -369,7 +419,8 @@ def build_fcpe(out_dir, lc: LatencyConfig):
     from torchfcpe.tools import DotDict
     _patch_fcpe_attention()
     step("Converting FCPE pitch extractor")
-    ckpt = torch.load(find_fcpe_weights(), map_location="cpu", weights_only=False)
+    weights_path, weights_source = find_fcpe_weights()
+    ckpt = torch.load(weights_path, map_location="cpu", weights_only=False)
     ckpt["config_dict"]["model"]["conv_dropout"] = 0.0
     ckpt["config_dict"]["model"]["atten_dropout"] = 0.0
     args = DotDict(ckpt["config_dict"])
@@ -394,7 +445,8 @@ def build_fcpe(out_dir, lc: LatencyConfig):
     )
     verify(ml, {"audio": x.numpy()}, [ref], ["latent"])
     meta = dict(f0_min=float(net.f0_min), f0_max=float(net.f0_max), out_dims=int(net.out_dims),
-                frames=int(ref.shape[1]), threshold=0.006)
+                frames=int(ref.shape[1]), threshold=0.006,
+                weights_source=weights_source, weights_sha256=_sha256(weights_path), weights_path=weights_path)
     with open(os.path.join(out_dir, "fcpe.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
@@ -408,10 +460,19 @@ def ensure_shared(models_dir, lc: LatencyConfig):
         meta["E"] = build_embedder(out_dir, lc)
     else:
         log(f"  embedder for N={lc.N} already exists")
-    if not os.path.exists(os.path.join(out_dir, "fcpe.mlpackage")) or not os.path.exists(os.path.join(out_dir, "fcpe.json")):
+    fcpe_json = os.path.join(out_dir, "fcpe.json")
+    fcpe_meta = None
+    if os.path.exists(fcpe_json):
+        try:
+            with open(fcpe_json) as f:
+                fcpe_meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            log("  fcpe.json is unreadable — rebuilding fcpe")
+    if not os.path.exists(os.path.join(out_dir, "fcpe.mlpackage")) or fcpe_meta is None:
         build_fcpe(out_dir, lc)
     else:
-        log(f"  fcpe for N={lc.N} already exists")
+        log(f"  fcpe for N={lc.N} already exists (source={fcpe_meta.get('weights_source', 'unknown')} "
+            f"sha256={fcpe_meta.get('weights_sha256', 'unknown')})")
     meta["N"] = lc.N
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)

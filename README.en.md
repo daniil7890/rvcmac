@@ -53,7 +53,7 @@ If the download still fails (locked-down network, proxy), place the file manuall
 2. Put it at `~/Library/Application Support/RVCMac/cache/fcpe.pt` (for a source build: `cache/fcpe.pt` inside the repository).
 3. Run the conversion again — the file is taken from the cache.
 
-The weights' SHA-256 is pinned in the converter and checked both after download and when reading the cache; a corrupt file is deleted. Expected value: `b9aeaeb673436eeda50ceafd632aa681aa63417e52eae4207503d180c9b10015`.
+The weights' SHA-256 is pinned in the converter and checked both after download and when reading the cache. On a mismatch the file is NOT deleted: the cache is renamed to `fcpe.pt.unverified-<sha8>`, the conversion stops and both hashes are logged — the decision is yours (it may be a different checkpoint that earlier benchmarks were built with). Expected value: `b9aeaeb673436eeda50ceafd632aa681aa63417e52eae4207503d180c9b10015`. Every conversion logs the weights' source (okada/cache/download/pip) and actual SHA-256; when a built fcpe is reused, they are read from `fcpe.json`.
 
 ## Quick start
 

@@ -95,4 +95,81 @@ final class QueueModelTests: XCTestCase {
         let nan = QueueModel.run(processingMs: [.nan], config: config)
         XCTAssertEqual(nan.underrunEvents, 0)
     }
+
+    // MARK: - Queue-level controller (P0). target = blockOut + prefill holds the newest block's
+    // first sample ~prefill ahead of the read head, so outputQueue ≈ prefill instead of ratcheting up.
+
+    private func controlled(_ band: Int) -> QueueModel.Config {
+        var c = config
+        c.controller = QueueModel.Controller(target: config.blockOut + config.prefill, band: band)
+        return c
+    }
+
+    private func steadyPipeline(_ r: QueueModel.Result) -> Double {
+        let s = (400..<580).map { r.blocks[$0].pipelineMs }.filter { $0.isFinite }.sorted()
+        return s.isEmpty ? .nan : s[s.count / 2]
+    }
+
+    func testControllerHoldsLevelAfterUnderrunWithoutGrowingUnderruns() {
+        // RTF 0.36 (worker catches up after the stall → the baseline phase ratchets up).
+        var times = [Double](repeating: 36, count: 600)
+        times[100] += 500
+        let base = QueueModel.run(processingMs: times, config: config)
+        let ctl = QueueModel.run(processingMs: times, config: controlled(480))
+        XCTAssertGreaterThan(base.underrunEvents, 0)
+        // criterion: pipeline p50 <= prefill + block_total + 5 ms, underruns must not grow
+        let prefillMs = Double(config.prefill) / config.outputRate * 1000
+        XCTAssertLessThanOrEqual(steadyPipeline(ctl), prefillMs + 36 + 5)
+        XCTAssertLessThanOrEqual(ctl.underrunEvents, base.underrunEvents)
+        // the ratchet is removed: the held level is below the baseline's drifted level
+        XCTAssertLessThan(steadyPipeline(ctl), steadyPipeline(base))
+        XCTAssertGreaterThan(avgQueue(ctl, from: 40000, to: 58000), 0)
+        XCTAssertLessThan(avgQueue(ctl, from: 40000, to: 58000), avgQueue(base, from: 40000, to: 58000))
+    }
+
+    func testControllerHysteresisDoesNotChangeTheHeldLevel() {
+        var times = [Double](repeating: 36, count: 600)
+        times[100] += 500
+        let a = QueueModel.run(processingMs: times, config: controlled(0))
+        let b = QueueModel.run(processingMs: times, config: controlled(960))
+        // band trades trim frequency for headroom, not the steady level
+        XCTAssertEqual(steadyPipeline(a), steadyPipeline(b), accuracy: 0.001)
+        XCTAssertEqual(a.underrunEvents, b.underrunEvents)
+        XCTAssertGreaterThanOrEqual(a.trimEvents, b.trimEvents)
+    }
+
+    func testControllerDoesNotTrimAtRealTime() {
+        // RTF ≈ 1: no sustained catch-up, so the level never exceeds target and trim stays off.
+        var times = [Double](repeating: 100, count: 600)
+        for b in 0..<600 { times[b] += b % 2 == 0 ? 1 : -1 }
+        times[100] += 500
+        let base = QueueModel.run(processingMs: times, config: config)
+        let ctl = QueueModel.run(processingMs: times, config: controlled(480))
+        XCTAssertEqual(ctl.trimEvents, 0)
+        XCTAssertEqual(ctl.underrunEvents, base.underrunEvents)   // only the stall itself
+    }
+
+    func testControllerReplacesMaxFillOnBurst() {
+        // A catch-up burst: baseline caps at frames + maxFill, the controller pulls down to target.
+        // queueTrace records the pre-trim peak, so compare the held plateau after the burst.
+        var times = [Double](repeating: 10, count: 60)
+        times[5] = 450
+        let base = QueueModel.run(processingMs: times, config: config)
+        let ctl = QueueModel.run(processingMs: times, config: controlled(0))
+        XCTAssertGreaterThan(base.trimEvents, 0)
+        XCTAssertGreaterThan(ctl.trimEvents, 0)
+        XCTAssertLessThan(avgQueue(ctl, from: 3000, to: 5500), avgQueue(base, from: 3000, to: 5500))
+    }
+
+    func testControllerDisabledKeepsLegacyBehavior() {
+        var times = [Double](repeating: 36, count: 600)
+        times[100] += 500
+        let legacy = QueueModel.run(processingMs: times, config: config)
+        var explicit = config
+        explicit.controller = nil
+        let same = QueueModel.run(processingMs: times, config: explicit)
+        XCTAssertEqual(legacy.trimEvents, same.trimEvents)
+        XCTAssertEqual(legacy.underrunEvents, same.underrunEvents)
+        XCTAssertEqual(steadyPipeline(legacy), steadyPipeline(same), accuracy: 0.001)
+    }
 }

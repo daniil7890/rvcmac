@@ -4,6 +4,22 @@ import Foundation
 /// It applies the same rules as the engine (prefill, output queue limit, trim in the output callback),
 /// but its results are calculated, not measured: real end-to-end latency only comes from a live session.
 public enum QueueModel {
+    /// Active queue-level control: hold the queue near `target` instead of letting its phase
+    /// ratchet up after underruns. When the level exceeds target + band, trim down to target;
+    /// the next trim fires only after the level climbs the band again (hysteresis).
+    /// Replaces the maxFill rule while enabled, including the first callback after a re-prefill,
+    /// so a catch-up overshoot is trimmed immediately instead of becoming the new phase.
+    /// At RTF ≈ 1 there is no sustained catch-up, the level never reaches target + band and trim
+    /// stays off; the controller only regulates when the worker runs ahead (RTF < 1).
+    public struct Controller: Sendable {
+        /// Post-trim queue level in frames. Recommended `blockOut + prefill`: the newest block's
+        /// first sample then sits ~prefill ahead of the read head (outputQueue ≈ prefill). Must stay
+        /// above `blockOut + outputBufferFrames`, or the queue drains below one buffer between writes.
+        public var target: Int
+        public var band: Int     // hysteresis above target, frames
+        public init(target: Int, band: Int) { self.target = target; self.band = band }
+    }
+
     public struct Config: Sendable {
         public var blockMs: Double
         public var inputRate: Double
@@ -13,12 +29,14 @@ public enum QueueModel {
         public var blockOut: Int
         public var prefill: Int
         public var maxFill: Int
+        public var controller: Controller?
 
         public init(blockMs: Double, inputRate: Double, inputBufferFrames: Int, outputRate: Double, outputBufferFrames: Int,
-                    blockOut: Int, prefill: Int, maxFill: Int) {
+                    blockOut: Int, prefill: Int, maxFill: Int, controller: Controller? = nil) {
             self.blockMs = blockMs; self.inputRate = inputRate; self.inputBufferFrames = inputBufferFrames
             self.outputRate = outputRate; self.outputBufferFrames = outputBufferFrames
             self.blockOut = blockOut; self.prefill = prefill; self.maxFill = maxFill
+            self.controller = controller
         }
     }
 
@@ -87,7 +105,19 @@ public enum QueueModel {
             if written == n && writePos - read <= 0 { break }
 
             let queued = writePos - read
-            if queued > frames && queued - frames > c.maxFill {
+            if let ctl = c.controller {
+                // hold the level near target: trim the overshoot above target + band down to
+                // target, never below one device buffer. Fires on the first started callback
+                // after a re-prefill too, so catch-up cannot set a new, higher phase.
+                let floor = max(ctl.target, frames)
+                if queued > floor + ctl.band {
+                    let skip = queued - floor
+                    read += skip
+                    result.trimEvents += 1
+                    result.trimFrames += skip
+                    resolved = max(resolved, written)
+                }
+            } else if queued > frames && queued - frames > c.maxFill {
                 let skip = queued - frames - c.maxFill
                 read += skip
                 result.trimEvents += 1

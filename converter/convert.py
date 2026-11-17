@@ -257,23 +257,52 @@ def _patch_fcpe_attention():
     mcn.linear_attention = linear_attention
 
 
+def _ssl_context():
+    # python-build-standalone ships no CA bundle, so plain urllib fails TLS while
+    # pip/requests work (they carry certifi). Respect an explicit SSL_CERT_FILE first.
+    import ssl
+    cafile = os.environ.get("SSL_CERT_FILE")
+    if not cafile:
+        try:
+            import certifi
+            cafile = certifi.where()
+        except ImportError:
+            cafile = None
+    return ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
+
+
+def _download_file(url, dest):
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, context=_ssl_context()) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+    except Exception as e:
+        log(f"  urllib download failed from {url}: {e}")
+        # system curl uses the macOS trust store, independent of Python's CA setup
+        import subprocess
+        subprocess.run(["/usr/bin/curl", "-L", "--fail", "-sS", "-o", dest, url], check=True)
+
+
 def find_fcpe_weights():
     if os.path.exists(OKADA_FCPE):
         return OKADA_FCPE
     cache = os.path.join(RVCMAC_HOME, "cache", "fcpe.pt")
     if os.path.exists(cache):
         return cache
-    import urllib.request
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     step("Downloading FCPE weights")
     for url in FCPE_URLS:
         try:
-            urllib.request.urlretrieve(url, cache + ".part")
+            _download_file(url, cache + ".part")
             os.replace(cache + ".part", cache)
             return cache
         except Exception as e:  # noqa
             log(f"  download failed from {url}: {e}")
-    raise SystemExit("ERROR: could not obtain FCPE weights (fcpe.pt)")
+    raise SystemExit(
+        "ERROR: could not obtain FCPE weights (fcpe.pt).\n"
+        f"Download it manually from:\n  {FCPE_URLS[0]}\n"
+        f"and place the file at:\n  {cache}"
+    )
 
 
 class FcpeWrap(nn.Module):

@@ -43,6 +43,18 @@ No Homebrew, Python or repository clone is needed.
 
 **Requirements:** Apple Silicon Mac, macOS 14 or later. Discord and OBS need [BlackHole](https://github.com/ExistentialAudio/BlackHole) (`brew install blackhole-2ch`).
 
+### If the converter cannot download the weights
+
+Symptom: `SSL: CERTIFICATE_VERIFY_FAILED` in the conversion log even though Python and the libraries installed fine. Cause: the standalone Python (python-build-standalone) ships no certificate store, so plain `urllib` cannot verify TLS. `pip` and `requests` carry their own CA set (certifi) — that is why they work and bare `urllib` does not. The converter uses certifi and falls back to the system `curl`; an explicit `SSL_CERT_FILE` is respected.
+
+If the download still fails (locked-down network, proxy), place the file manually:
+
+1. Download [fcpe_c_v001.pt](https://github.com/CNChTu/FCPE/raw/819765c8db719c457f53aaee3238879ab98ed0cd/torchfcpe/assets/fcpe_c_v001.pt) (~41 MB).
+2. Put it at `~/Library/Application Support/RVCMac/cache/fcpe.pt` (for a source build: `cache/fcpe.pt` inside the repository).
+3. Run the conversion again — the file is taken from the cache.
+
+The weights' SHA-256 is pinned in the converter and checked both after download and when reading the cache; a corrupt file is deleted. Expected value: `b9aeaeb673436eeda50ceafd632aa681aa63417e52eae4207503d180c9b10015`.
+
 ## Quick start
 
 1. **Import…** → choose a `.pth` or `.safetensors`. A `.index` in the same folder is picked up automatically; otherwise attach it with **Index…**.
@@ -81,7 +93,7 @@ mic ─► Core Audio ─► 16 kHz ─► ContentVec (Core ML, GPU) ─► inde
 
 - **Converter** (`converter/convert.py`, Python) turns an RVC model, ContentVec and FCPE into `.mlpackage` files. Shapes are fixed for the chosen latency (static tensor shapes). Before saving, the converter checks the Core ML output against PyTorch.
 - **App** (`app/`, Swift) captures and plays audio through HAL IOProcs. The audio callbacks take no locks and allocate nothing: data goes through lock-free rings on C11 atomics (`RVCMacRT`). Inference runs on its own thread. The `.index` search is exact, via `cblas_sgemm`. Blocks are joined with SOLA, as in RVC WebUI and w-okada.
-- **First run.** The converter scripts ship inside `RVCMac.app`. Python is downloaded from [python-build-standalone](https://github.com/astral-sh/python-build-standalone); its SHA-256 is pinned in the build and checked after download. The libraries go into a separate environment in the data folder.
+- **First run.** The converter scripts ship inside `RVCMac.app`. Python is downloaded from [python-build-standalone](https://github.com/astral-sh/python-build-standalone); its SHA-256 is pinned in the build and checked after download. The FCPE weights' SHA-256 is pinned in the converter. The libraries go into a separate environment in the data folder.
 
 ## Privacy and security
 

@@ -43,6 +43,18 @@ MacBook Air M2, «Neural Engine + GPU», выход в BlackHole:
 
 **Требования:** Mac на Apple Silicon, macOS 14 или новее. Для Discord и OBS нужен [BlackHole](https://github.com/ExistentialAudio/BlackHole) (`brew install blackhole-2ch`).
 
+### Если конвертер не может скачать веса
+
+Симптом: в логе конвертации `SSL: CERTIFICATE_VERIFY_FAILED`, хотя Python и библиотеки установились нормально. Причина: standalone-Python (python-build-standalone) не содержит хранилища сертификатов, поэтому `urllib` не может проверить TLS. `pip` и `requests` несут собственный набор CA (certifi) — поэтому они работают, а голый `urllib` нет. Конвертер использует certifi, а при неудаче — системный `curl`; переменную `SSL_CERT_FILE` он уважает, если она задана.
+
+Если скачать всё равно не удалось (закрытая сеть, прокси), положи файл вручную:
+
+1. Скачай [fcpe_c_v001.pt](https://github.com/CNChTu/FCPE/raw/819765c8db719c457f53aaee3238879ab98ed0cd/torchfcpe/assets/fcpe_c_v001.pt) (~41 МБ).
+2. Положи его как `~/Library/Application Support/RVCMac/cache/fcpe.pt` (для сборки из исходников — `cache/fcpe.pt` в папке репозитория).
+3. Повтори конвертацию — файл возьмётся из кэша.
+
+SHA-256 весов закреплён в конвертере и проверяется и после скачивания, и при чтении кэша; битый файл удаляется. Ожидаемое значение: `b9aeaeb673436eeda50ceafd632aa681aa63417e52eae4207503d180c9b10015`.
+
 ## Быстрый старт
 
 1. **Импорт…** → выбери `.pth` или `.safetensors`. `.index` из той же папки подхватится сам, иначе подключи его кнопкой **Index…**.
@@ -81,7 +93,7 @@ MacBook Air M2, «Neural Engine + GPU», выход в BlackHole:
 
 - **Конвертер** (`converter/convert.py`, Python) переводит RVC-модель, ContentVec и FCPE в `.mlpackage`. Размеры фиксируются под выбранную задержку (статические формы тензоров). Перед сохранением конвертер сверяет результат Core ML с PyTorch.
 - **Приложение** (`app/`, Swift) берёт и выдаёт звук через HAL IOProc. В аудиоколбэках нет локов и аллокаций: обмен идёт через lock-free кольца на C11 atomics (`RVCMacRT`). Инференс работает в отдельном потоке. Поиск по `.index` точный, через `cblas_sgemm`. Склейка блоков — SOLA, как в RVC WebUI и w-okada.
-- **Первый запуск.** Скрипты конвертера лежат внутри `RVCMac.app`. Python скачивается из [python-build-standalone](https://github.com/astral-sh/python-build-standalone), его SHA-256 закреплён в сборке и проверяется после скачивания. Библиотеки ставятся в отдельное окружение в папке данных.
+- **Первый запуск.** Скрипты конвертера лежат внутри `RVCMac.app`. Python скачивается из [python-build-standalone](https://github.com/astral-sh/python-build-standalone), его SHA-256 закреплён в сборке и проверяется после скачивания. SHA-256 весов FCPE закреплён в конвертере. Библиотеки ставятся в отдельное окружение в папке данных.
 
 ## Приватность и безопасность
 

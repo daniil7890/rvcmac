@@ -39,6 +39,8 @@ CONTENTVEC_REPO = "lengyue233/content-vec-best"
 FCPE_URLS = [
     "https://github.com/CNChTu/FCPE/raw/819765c8db719c457f53aaee3238879ab98ed0cd/torchfcpe/assets/fcpe_c_v001.pt",
 ]
+# fcpe_c_v001.pt at the pinned commit above; identical to the torchfcpe pip asset
+FCPE_SHA256 = "b9aeaeb673436eeda50ceafd632aa681aa63417e52eae4207503d180c9b10015"
 OKADA_FCPE = os.path.expanduser("~/projects/okada-voice-changer/server/dist/MMVCServerSIO/pretrain/fcpe.pt")
 
 SR16 = 16000
@@ -283,21 +285,44 @@ def _download_file(url, dest):
         subprocess.run(["/usr/bin/curl", "-L", "--fail", "-sS", "-o", dest, url], check=True)
 
 
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def find_fcpe_weights():
     if os.path.exists(OKADA_FCPE):
         return OKADA_FCPE
     cache = os.path.join(RVCMAC_HOME, "cache", "fcpe.pt")
     if os.path.exists(cache):
-        return cache
+        if _sha256(cache) == FCPE_SHA256:
+            return cache
+        log(f"  cached {cache} is corrupt (SHA-256 mismatch) — deleting and re-downloading")
+        os.remove(cache)
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     step("Downloading FCPE weights")
     for url in FCPE_URLS:
         try:
             _download_file(url, cache + ".part")
-            os.replace(cache + ".part", cache)
-            return cache
         except Exception as e:  # noqa
             log(f"  download failed from {url}: {e}")
+            continue
+        got = _sha256(cache + ".part")
+        if got != FCPE_SHA256:
+            os.remove(cache + ".part")
+            raise SystemExit(
+                "ERROR: FCPE weights checksum mismatch — file corrupt or tampered.\n"
+                f"  expected SHA-256: {FCPE_SHA256}\n"
+                f"  got:              {got}\n"
+                f"Download it manually from:\n  {url}\n"
+                f"and place the file at:\n  {cache}"
+            )
+        os.replace(cache + ".part", cache)
+        return cache
     raise SystemExit(
         "ERROR: could not obtain FCPE weights (fcpe.pt).\n"
         f"Download it manually from:\n  {FCPE_URLS[0]}\n"

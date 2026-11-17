@@ -65,6 +65,13 @@ package enum SystemProbe {
 
 /// Samples CPU %, memory and thermal state about once a second.
 package final class ResourceMonitor {
+    /// CPU time is quantized to scheduler ticks (~10 ms), and a delayed timer can fire
+    /// a catch-up tick right after the late one (seen live: dt=0.037 s after a 1.98 s
+    /// delay reported 175% at a true ~70% load). Below 0.2 s — a fifth of the nominal
+    /// 1 s period, which a healthy tick never undershoots — quantization alone can
+    /// inflate the figure by tens of percent, so such ticks are dropped.
+    package static let minSampleInterval = 0.2
+
     package struct Sample {
         /// Seconds since the monitor was reset (session start).
         package var t: Double
@@ -76,29 +83,45 @@ package final class ResourceMonitor {
         }
     }
 
-    private var lastCPU = SystemProbe.cpuSeconds()
-    private var lastWall = Date()
-    private var startWall = Date()
+    private let now: () -> Date
+    private let cpuSeconds: () -> Double
+    private var lastCPU: Double
+    private var lastWall: Date
+    private var startWall: Date
     package private(set) var samples: [Sample] = []
+    /// Ticks dropped for dt < minSampleInterval; their CPU time is not lost, it
+    /// accumulates into the next accepted sample.
+    package private(set) var droppedSamples = 0
 
-    package init() {}
+    package init(now: @escaping () -> Date = Date.init, cpuSeconds: @escaping () -> Double = SystemProbe.cpuSeconds) {
+        self.now = now
+        self.cpuSeconds = cpuSeconds
+        lastCPU = cpuSeconds()
+        lastWall = now()
+        startWall = lastWall
+    }
 
     package func reset() {
         samples.removeAll()
-        lastCPU = SystemProbe.cpuSeconds()
-        lastWall = Date()
+        droppedSamples = 0
+        lastCPU = cpuSeconds()
+        lastWall = now()
         startWall = lastWall
     }
 
     @discardableResult
-    package func sample() -> Sample {
-        let cpu = SystemProbe.cpuSeconds()
-        let now = Date()
-        let dt = now.timeIntervalSince(lastWall)
-        let pct = dt > 0 ? (cpu - lastCPU) / dt * 100 : 0
+    package func sample() -> Sample? {
+        let wall = now()
+        let dt = wall.timeIntervalSince(lastWall)
+        guard dt >= Self.minSampleInterval else {
+            droppedSamples += 1
+            return nil   // keep lastCPU/lastWall so no CPU ticks are lost
+        }
+        let cpu = cpuSeconds()
+        let pct = (cpu - lastCPU) / dt * 100
         lastCPU = cpu
-        lastWall = now
-        let s = Sample(t: now.timeIntervalSince(startWall), cpuPercent: pct, memoryMB: SystemProbe.memoryMB(), thermal: SystemProbe.thermalName())
+        lastWall = wall
+        let s = Sample(t: wall.timeIntervalSince(startWall), cpuPercent: pct, memoryMB: SystemProbe.memoryMB(), thermal: SystemProbe.thermalName())
         samples.append(s)
         if samples.count > 7200 { samples.removeFirst(samples.count - 7200) }
         return s
@@ -109,7 +132,8 @@ package final class ResourceMonitor {
         for s in samples { thermal[s.thermal, default: 0] += 1 }
         return Report.Resources(cpuPercent: Distribution.of(samples.map(\.cpuPercent)),
                                 memoryMB: Distribution.of(samples.map(\.memoryMB)),
-                                thermalStates: thermal, gpuAne: SystemProbe.gpuAneNote)
+                                thermalStates: thermal, gpuAne: SystemProbe.gpuAneNote,
+                                droppedCpuSamples: droppedSamples)
     }
 }
 

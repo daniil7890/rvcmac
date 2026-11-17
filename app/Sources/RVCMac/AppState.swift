@@ -449,7 +449,7 @@ final class AppState: ObservableObject {
     }
 
     private func tick() {
-        resources = monitor.sample()
+        if let s = monitor.sample() { resources = s }
     }
 
     /// Switches the voice without stopping audio (same latency settings): the new models are

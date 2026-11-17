@@ -172,8 +172,19 @@ public struct Report: Codable, Sendable {
         public var memoryMB: Distribution     // physical footprint
         public var thermalStates: [String: Int]
         public var gpuAne: String
-        public init(cpuPercent: Distribution, memoryMB: Distribution, thermalStates: [String: Int], gpuAne: String) {
+        public var droppedCpuSamples: Int     // ticks dropped as too short (timer catch-up artifacts)
+        public init(cpuPercent: Distribution, memoryMB: Distribution, thermalStates: [String: Int], gpuAne: String, droppedCpuSamples: Int = 0) {
             self.cpuPercent = cpuPercent; self.memoryMB = memoryMB; self.thermalStates = thermalStates; self.gpuAne = gpuAne
+            self.droppedCpuSamples = droppedCpuSamples
+        }
+        private enum CodingKeys: String, CodingKey { case cpuPercent, memoryMB, thermalStates, gpuAne, droppedCpuSamples }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            cpuPercent = try c.decode(Distribution.self, forKey: .cpuPercent)
+            memoryMB = try c.decode(Distribution.self, forKey: .memoryMB)
+            thermalStates = try c.decode([String: Int].self, forKey: .thermalStates)
+            gpuAne = try c.decode(String.self, forKey: .gpuAne)
+            droppedCpuSamples = try c.decodeIfPresent(Int.self, forKey: .droppedCpuSamples) ?? 0
         }
     }
 

@@ -282,7 +282,9 @@ def _download_file(url, dest):
         log(f"  urllib download failed from {url}: {e}")
         # system curl uses the macOS trust store, independent of Python's CA setup
         import subprocess
-        subprocess.run(["/usr/bin/curl", "-L", "--fail", "-sS", "-o", dest, url], check=True)
+        subprocess.run(["/usr/bin/curl", "-L", "--fail", "-sS",
+                        "--connect-timeout", "15", "--max-time", "300", "--retry", "2",
+                        "-o", dest, url], check=True)
 
 
 def _sha256(path):

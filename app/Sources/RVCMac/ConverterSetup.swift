@@ -32,36 +32,26 @@ enum ConverterSetup {
 
     static var isReady: Bool { FileManager.default.isExecutableFile(atPath: RVCMacPaths.python.path) }
 
-    private static let certifiLock = NSLock()
-    private static var certifiCache: String?
-
-    /// The venv's certifi CA bundle, queried once and cached. Standalone Python
-    /// (python-build-standalone) ships no CA bundle, so urllib inside the converter
-    /// fails TLS unless pointed at certifi; pip/requests carry their own copy.
-    static func certifiBundle() -> String? {
-        certifiLock.lock(); defer { certifiLock.unlock() }
-        if let cached = certifiCache { return cached }
-        guard isReady else { return nil }
-        let p = Process()
-        p.executableURL = RVCMacPaths.python
-        p.arguments = ["-c", "import certifi; print(certifi.where())"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
-        certifiCache = path
-        return path
+    /// The venv's certifi CA bundle, found by globbing site-packages — no process
+    /// spawn, so this is safe on the main thread. Standalone Python ships no CA
+    /// bundle and urllib inside the converter would fail TLS; convert.py also
+    /// fixes this itself, the env vars are a second belt. No bundle — no vars.
+    static func certifiBundle(venv: URL = venvDir) -> String? {
+        let fm = FileManager.default
+        let lib = venv.appendingPathComponent("lib")
+        guard let entries = try? fm.contentsOfDirectory(atPath: lib.path) else { return nil }
+        for name in entries.sorted() where name.hasPrefix("python") {
+            let p = lib.appendingPathComponent(name)
+                .appendingPathComponent("site-packages/certifi/cacert.pem")
+            if fm.fileExists(atPath: p.path) { return p.path }
+        }
+        return nil
     }
 
     /// Shell variables don't reach an app launched from Finder, so set the CA bundle
     /// explicitly for child processes. An inherited value (e.g. a corporate CA) wins.
-    static func applyCertifi(to env: inout [String: String]) {
-        guard let bundle = certifiBundle() else { return }
+    static func applyCertifi(to env: inout [String: String], venv: URL = venvDir) {
+        guard let bundle = certifiBundle(venv: venv) else { return }
         if env["SSL_CERT_FILE"] == nil { env["SSL_CERT_FILE"] = bundle }
         if env["REQUESTS_CA_BUNDLE"] == nil { env["REQUESTS_CA_BUNDLE"] = bundle }
     }

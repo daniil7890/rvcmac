@@ -41,7 +41,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RVCMacTests",
-            dependencies: ["RVCMacRT", "RVCMacCore", "RVCMacEngine"],
+            dependencies: ["RVCMacRT", "RVCMacCore", "RVCMacEngine", "RVCMac"],
             path: "Tests/RVCMacTests"
         ),
     ]

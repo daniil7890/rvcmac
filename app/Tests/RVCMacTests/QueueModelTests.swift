@@ -172,4 +172,18 @@ final class QueueModelTests: XCTestCase {
         XCTAssertEqual(legacy.underrunEvents, same.underrunEvents)
         XCTAssertEqual(steadyPipeline(legacy), steadyPipeline(same), accuracy: 0.001)
     }
+
+    func testTailDrainsWhenPrefillExceedsOneBlock() {
+        // prefill > blockOut: an underrun near the last block leaves a tail smaller than
+        // prefill; it must still play out instead of waiting for a prefill that can never come.
+        var c = config
+        c.prefill = 6000   // > blockOut 4800, <= 3 * blockOut
+        let times = [20.0, 20, 2000]
+        for ctl in [nil, QueueModel.Controller(target: c.blockOut + c.prefill, band: 480)] {
+            c.controller = ctl
+            let r = QueueModel.run(processingMs: times, config: c)
+            XCTAssertGreaterThan(r.underrunEvents, 0)
+            XCTAssertTrue(r.blocks[2].pipelineMs.isFinite)
+        }
+    }
 }

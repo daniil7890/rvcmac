@@ -10,14 +10,17 @@ public enum QueueModel {
     /// Replaces the maxFill rule while enabled, including the first callback after a re-prefill,
     /// so a catch-up overshoot is trimmed immediately instead of becoming the new phase.
     /// At RTF ≈ 1 there is no sustained catch-up, the level never reaches target + band and trim
-    /// stays off; the controller only regulates when the worker runs ahead (RTF < 1).
+    /// stays off (for the recommended target); the controller only regulates when the worker runs ahead (RTF < 1).
     public struct Controller: Sendable {
         /// Post-trim queue level in frames. Recommended `blockOut + prefill`: the newest block's
         /// first sample then sits ~prefill ahead of the read head (outputQueue ≈ prefill). Must stay
         /// above `blockOut + outputBufferFrames`, or the queue drains below one buffer between writes.
         public var target: Int
         public var band: Int     // hysteresis above target, frames
-        public init(target: Int, band: Int) { self.target = target; self.band = band }
+        public init(target: Int, band: Int) {
+            precondition(target > 0 && band >= 0, "Controller target must be positive and band non-negative")
+            self.target = target; self.band = band
+        }
     }
 
     public struct Config: Sendable {
@@ -100,17 +103,20 @@ public enum QueueModel {
             while written < n && finished[written] <= now { written += 1 }
             let writePos = written * c.blockOut
             result.queueTrace.append(QueueSample(tMs: now, queueMs: Double(writePos - read) / c.outputRate * 1000))
-            if !started && writePos - read >= c.prefill { started = true }
+            // at end of stream play out the tail even if it can never reach prefill again
+            // (prefill > blockOut and an underrun near the last block would otherwise loop forever)
+            if !started && (writePos - read >= c.prefill || (written == n && writePos - read > 0)) { started = true }
             guard started else { continue }
             if written == n && writePos - read <= 0 { break }
 
             let queued = writePos - read
             if let ctl = c.controller {
                 // hold the level near target: trim the overshoot above target + band down to
-                // target, never below one device buffer. Fires on the first started callback
-                // after a re-prefill too, so catch-up cannot set a new, higher phase.
+                // target. Fires on the first started callback after a re-prefill too, so catch-up
+                // cannot set a new, higher phase. The clamp to one device buffer only prevents an
+                // immediate over-read; a target below blockOut + frames still underruns between writes.
                 let floor = max(ctl.target, frames)
-                if queued > floor + ctl.band {
+                if queued - floor > ctl.band {
                     let skip = queued - floor
                     read += skip
                     result.trimEvents += 1

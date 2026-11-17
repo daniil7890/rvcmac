@@ -249,6 +249,10 @@ public enum Loc {
             "Underrun: +%@ events (%@ total).",
         "Подрезка очереди: +%@ событий (всего %@).":
             "Queue trim: +%@ events (%@ total).",
+        "ModelReleaser: принято %@ объектов, в очереди %@.":
+            "ModelReleaser: accepted %@ objects, %@ queued.",
+        "ModelReleaser: освобождено %@ объектов, в очереди %@.":
+            "ModelReleaser: released %@ objects, %@ queued.",
         "Переполнение входа (кадры)":
             "Input overflow (frames)",
         "Пропущено входа, чтобы догнать":

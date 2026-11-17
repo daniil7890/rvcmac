@@ -47,7 +47,7 @@ package final class VoiceEngine {
     private var activeModel: LoadedVoice
     private var thread: Thread?
     private let session = WorkerSession()
-    private let releaser = ModelReleaser(label: "RVCMac.modelRelease")
+    package let releaser = ModelReleaser(label: "RVCMac.modelRelease")
     private let paramsLock = OSAllocatedUnfairLock(initialState: EngineParams())
     private let swapLock = OSAllocatedUnfairLock(uncheckedState: (ModelState, UInt64)?.none)
 

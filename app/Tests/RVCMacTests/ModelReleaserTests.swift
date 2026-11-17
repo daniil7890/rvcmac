@@ -1,5 +1,6 @@
 import Foundation
 import os
+import RVCMacCore
 import RVCMacEngine
 import XCTest
 
@@ -36,5 +37,24 @@ final class ModelReleaserTests: XCTestCase {
         }
         XCTAssertEqual(released.wait(timeout: .now() + 2), .success)
         XCTAssertNil(weakProbe)
+    }
+
+    func testLogTracksAcceptedAndReleasedObjects() {
+        let prev = Loc.language
+        Loc.language = .ru
+        defer { Loc.language = prev }
+        let releaser = ModelReleaser(label: "test.modelReleaseLog")
+        let lines = OSAllocatedUnfairLock(initialState: [String]())
+        let released = DispatchSemaphore(value: 0)
+        releaser.log = { s in
+            lines.withLock { $0.append(s) }
+            if s.hasPrefix("ModelReleaser: освобождено") { released.signal() }
+        }
+        releaser.release(NSObject(), NSObject())
+        XCTAssertEqual(released.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(lines.withLock { $0 }, [
+            "ModelReleaser: принято 2 объектов, в очереди 2.",
+            "ModelReleaser: освобождено 2 объектов, в очереди 0.",
+        ])
     }
 }

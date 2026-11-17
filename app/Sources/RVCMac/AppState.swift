@@ -283,6 +283,8 @@ final class AppState: ObservableObject {
                 let t0 = Date()
                 let loaded = try LoadedVoice(voice: voice, config: cfg, units: units)
                 let engine = VoiceEngine(model: loaded)
+                // AppState outlives the engine, so releases from the engine's deinit are logged too
+                engine.releaser.log = { [weak self] s in Task { @MainActor in self?.appendLogStamped(s) } }
                 let loadTime = Date().timeIntervalSince(t0)
                 await MainActor.run { self.status = tr("Прогрев моделей…") }
                 let warmMs = try engine.prepare(outputRate: AudioDevices.sampleRate(output.id))

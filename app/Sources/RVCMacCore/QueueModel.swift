@@ -122,7 +122,9 @@ public enum QueueModel {
         var result = Result(blocks: [])
         guard n > 0, c.blockOut > 0, c.outputBufferFrames > 0 else { result.blocks = blocks; return result }
         // degenerate configs would never start playback or never advance: bail out instead of looping forever
-        guard c.prefill <= n * c.blockOut, processingMs.allSatisfy({ $0.isFinite }),
+        // (a non-finite callback phase or rate would keep `now` from ever reaching a finish time)
+        guard c.prefill <= n * c.blockOut, c.outputRate.isFinite, c.outputRate > 0, c.callbackPhaseMs.isFinite,
+              processingMs.allSatisfy({ $0.isFinite }),
               capture.allSatisfy({ $0.isFinite }), finished.allSatisfy({ $0.isFinite }),
               zip(finished, finished.dropFirst()).allSatisfy({ $0.0 <= $0.1 }) else { result.blocks = blocks; return result }
 
@@ -225,8 +227,12 @@ public enum QueueModel {
                 let d = live > 0 ? abs(model - live) / live : (model == live ? 0 : .infinity)
                 return Metric(name: name, live: live, model: model, deviation: d, withinTolerance: d <= tolerance)
             }
-            let queue = Distribution.of(r.blocks.map(\.outputQueueMs)).p50
-            let m = [metric("queueP50Ms", queueP50Ms, queue),
+            // no resolved block (everything trimmed, empty run): there is no level to compare
+            let level = Distribution.of(r.blocks.map(\.outputQueueMs))
+            let queue = level.count == 0
+                ? Metric(name: "queueP50Ms", live: queueP50Ms, model: .nan, deviation: .infinity, withinTolerance: false)
+                : metric("queueP50Ms", queueP50Ms, level.p50)
+            let m = [queue,
                      metric("trims", Double(trims), Double(r.trimEvents)),
                      metric("underruns", Double(underruns), Double(r.underrunEvents))]
             return Verdict(metrics: m, calibrated: m.allSatisfy(\.withinTolerance))

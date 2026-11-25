@@ -228,7 +228,14 @@ def perf(dirs, names):
         for name in names:
             f=f'{d}/{name}/blocks.csv'
             if not os.path.exists(f): continue
-            with open(f) as fh: x=[float(r['block_total_ms']) for r in csv.DictReader(fh) if r.get('block_total_ms') not in (None,'','nan')]
+            with open(f) as fh:
+                x=[]; bad=0
+                for r in csv.DictReader(fh):
+                    try: v=float(r['block_total_ms'])
+                    except (KeyError,TypeError,ValueError): bad+=1; continue
+                    if np.isfinite(v): x.append(v)
+                    else: bad+=1
+            if bad: print(f"PERF {d}/{name}: {bad} rows without a finite block_total_ms skipped")
             if not x: continue
             runs.append(dict(name=name,dir=d,n=len(x),p99=float(np.percentile(x,99)))); pool+=x
     if not pool: return None
@@ -266,7 +273,7 @@ def main():
     if cross: print('NOTE: cross-config comparison (different block sizes) — the difference verdict is NOT a gate; use absolute per-file thresholds')
     for d in dec: print({k:(round(v,3) if isinstance(v,float) else v) for k,v in d.items() if k!='per_file_d'})
     for m,v in pf.items():
-        if v is None: print(f'PERF {m}: no blocks.csv under the run dirs'); continue
+        if v is None: print(f'PERF {m}: no blocks.csv with a finite block_total_ms under the run dirs'); continue
         print(f"PERF {m}: max-of-file p99 {v['max_file_p99']:.3f} ms (n per run {v['n_per_run_min']}..{v['n_per_run_max']}, {v['runs']} runs), "
               f"pooled p99 {v['pooled_p99']:.3f} ms (n = {v['n_pooled']})")
 if __name__=='__main__': main()

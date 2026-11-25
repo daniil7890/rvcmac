@@ -94,6 +94,15 @@ final class QueueModelTests: XCTestCase {
         XCTAssertEqual(r.underrunEvents, 0)
         let nan = QueueModel.run(processingMs: [.nan], config: config)
         XCTAssertEqual(nan.underrunEvents, 0)
+        // a callback grid that never advances must bail out, not loop
+        for phase in [Double.nan, -.infinity] {
+            var c = config; c.callbackPhaseMs = phase
+            XCTAssertEqual(QueueModel.run(processingMs: [20, 20], config: c).underrunEvents, 0)
+        }
+        for rate in [0.0, Double.nan] {
+            var c = config; c.outputRate = rate
+            XCTAssertEqual(QueueModel.run(processingMs: [20, 20], config: c).underrunEvents, 0)
+        }
     }
 
     // MARK: - Queue-level controller (P0). target = blockOut + prefill holds the newest block's
@@ -291,5 +300,9 @@ final class QueueModelTests: XCTestCase {
         let zeroQueue = Distribution.of(clean.blocks.map(\.outputQueueMs)).p50
         XCTAssertTrue(QueueModel.Calibration(queueP50Ms: zeroQueue, trims: 0, underruns: 0).evaluate(clean).calibrated)
         XCTAssertFalse(QueueModel.Calibration(queueP50Ms: queue, trims: 0, underruns: underruns).evaluate(r).calibrated)
+        // no resolved block: nothing to calibrate against, even with zeros on both sides
+        let empty = QueueModel.run(processingMs: [], config: config)
+        XCTAssertEqual(empty.trimEvents, 0)
+        XCTAssertFalse(QueueModel.Calibration(queueP50Ms: 0, trims: 0, underruns: 0).evaluate(empty).calibrated)
     }
 }

@@ -186,4 +186,110 @@ final class QueueModelTests: XCTestCase {
             XCTAssertTrue(r.blocks[2].pipelineMs.isFinite)
         }
     }
+
+    // MARK: - Replay of a recorded session (live A, 116.8 s) and the calibration gate.
+    // The synthetic grid ran with +-1 ms jitter; the live trace has p99-p50 = 15.7 ms.
+
+    private func liveAReplay() -> QueueModel.Replay {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/live-A-b50-replay.csv")
+        let lines = try! String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+        var t: [Double] = [], p: [Double] = []
+        for l in lines where !l.hasPrefix("#") && !l.hasPrefix("block") {
+            let f = l.split(separator: ",").map { Double($0)! }
+            t.append(f[1]); p.append(f[2])
+        }
+        return QueueModel.Replay(processingMs: p, finishedMs: t)
+    }
+
+    /// Session A geometry: b50, in/out 44.1 kHz, blockOut 2205, prefill blockOut/2, maxFill 1.5 blockOut.
+    /// The output buffer was not logged in that session; 512 is what every device present reports.
+    private func liveAConfig(phase: Double = 0) -> QueueModel.Config {
+        QueueModel.Config(blockMs: 50, inputRate: 44100, inputBufferFrames: 512, outputRate: 44100, outputBufferFrames: 512,
+                          blockOut: 2205, prefill: 1102, maxFill: 3307, callbackPhaseMs: phase)
+    }
+
+    private func liveACalibration() -> QueueModel.Calibration {
+        // report live-20261117-115229: queue = p50(pipeline - block_total) = 60.3 ms, 22 trims, 19 underruns
+        QueueModel.Calibration(queueP50Ms: 60.3, trims: 22, underruns: 19)
+    }
+
+    func testReplayOfLiveAIsNotCalibratedOnQueueLevel() {
+        let r = QueueModel.replay(liveAReplay(), config: liveAConfig())
+        let v = liveACalibration().evaluate(r)
+        for m in v.metrics { print(String(format: "CALIBRATION %@: live %.1f model %.1f deviation %.1f%%%@",
+                                           m.name, m.live, m.model, m.deviation * 100, m.withinTolerance ? "" : "  <- FAIL")) }
+        print("REPLAY live A: trimFrames \(r.trimFrames) (live 6214), underrunFrames \(r.underrunFrames) (live 3924)")
+        // the counts land within the gate, the level does not: the live queue sits well above what
+        // the model's rules produce from the same block times (the output buffer of that session
+        // was not logged; see testReplayDependsOnOutputBufferSize). Until that is understood the
+        // replay is not a valid stand-in for the engine, and no controller is evaluated on it.
+        XCTAssertEqual(r.trimEvents, 24)
+        XCTAssertEqual(r.trimFrames, 6880)
+        XCTAssertEqual(r.underrunEvents, 25)
+        XCTAssertEqual(r.underrunFrames, 4078)
+        XCTAssertEqual(v.failed, ["queueP50Ms", "underruns"])
+        XCTAssertFalse(v.calibrated)
+        XCTAssertGreaterThan(v.metrics[0].deviation, 0.20)
+        XCTAssertTrue(v.metrics[1].withinTolerance)
+    }
+
+    func testReplayDependsOnOutputBufferSize() {
+        // The same block times, only the output buffer changed. The held level moves with it by
+        // tens of ms, so a replay of a session whose buffer was not logged cannot be trusted.
+        var levels: [Double] = []
+        for frames in [64, 256, 512, 1024, 2048] {
+            var c = liveAConfig()
+            c.outputBufferFrames = frames
+            let r = QueueModel.replay(liveAReplay(), config: c)
+            let level = Distribution.of(r.blocks.map(\.outputQueueMs)).p50
+            levels.append(level)
+            print(String(format: "REPLAY out buffer %4d: underruns %d/%d, trims %d/%d, queue p50 %.1f ms",
+                         frames, r.underrunEvents, r.underrunFrames, r.trimEvents, r.trimFrames, level))
+        }
+        XCTAssertEqual(levels, levels.sorted())
+        XCTAssertGreaterThan(levels.last! - levels.first!, 40)
+    }
+
+    func testReplayIsSensitiveToCallbackPhase() {
+        // The callback grid's phase against the block writes is unknown in a recording. The verdict
+        // must not hinge on it: sweep one buffer and require every phase to miss the same way.
+        let cal = liveACalibration()
+        var levels: [Double] = [], trims: [Int] = [], underruns: [Int] = []
+        for i in 0..<12 {
+            let r = QueueModel.replay(liveAReplay(), config: liveAConfig(phase: Double(i) * 11.61 / 12))
+            XCTAssertEqual(r.blocks.count, 2328)
+            levels.append(Distribution.of(r.blocks.map(\.outputQueueMs)).p50)
+            trims.append(r.trimEvents); underruns.append(r.underrunEvents)
+            XCTAssertFalse(cal.evaluate(r).calibrated, "phase \(i)")
+        }
+        print("REPLAY phase sweep: queue p50 \(levels.min()!)...\(levels.max()!) ms, trims \(trims.min()!)...\(trims.max()!), underruns \(underruns.min()!)...\(underruns.max()!)")
+        XCTAssertLessThan(levels.max()!, 60.3 * 0.8)   // never near the live level
+    }
+
+    func testCalibrationGateRule() {
+        var times = [Double](repeating: 36, count: 800)
+        for b in stride(from: 100, to: 700, by: 50) { times[b] += 500 }   // twelve stalls
+        let r = QueueModel.run(processingMs: times, config: config)
+        let underruns = r.underrunEvents, trims = r.trimEvents
+        XCTAssertEqual(underruns, 12)                                     // one per stall
+        XCTAssertGreaterThan(trims, 0)
+        let queue = Distribution.of(r.blocks.map(\.outputQueueMs)).p50
+        let exact = QueueModel.Calibration(queueP50Ms: queue, trims: trims, underruns: underruns).evaluate(r)
+        XCTAssertTrue(exact.calibrated)
+        XCTAssertTrue(exact.metrics.allSatisfy { $0.deviation == 0 })
+        // inclusive at the tolerance, failing just past it. The deviation is relative to the live
+        // value: 12 modelled against 10 live is exactly 20%, against 9 it is 33%.
+        let at = QueueModel.Calibration(queueP50Ms: queue, trims: trims, underruns: 10).evaluate(r)
+        XCTAssertTrue(at.calibrated)
+        let past = QueueModel.Calibration(queueP50Ms: queue, trims: trims, underruns: 9).evaluate(r)
+        XCTAssertFalse(past.calibrated)
+        XCTAssertEqual(past.failed, ["underruns"])
+        // a live count of zero only matches a model count of zero (no relative deviation is defined)
+        let clean = QueueModel.run(processingMs: [20, 20, 20], config: config)
+        XCTAssertEqual(clean.trimEvents, 0)
+        let zeroQueue = Distribution.of(clean.blocks.map(\.outputQueueMs)).p50
+        XCTAssertTrue(QueueModel.Calibration(queueP50Ms: zeroQueue, trims: 0, underruns: 0).evaluate(clean).calibrated)
+        XCTAssertFalse(QueueModel.Calibration(queueP50Ms: queue, trims: 0, underruns: underruns).evaluate(r).calibrated)
+    }
 }

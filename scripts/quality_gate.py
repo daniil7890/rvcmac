@@ -15,8 +15,17 @@ Input:
   --a and --b are labels. Compare modes (cpu vs ane-gpu), or a candidate against a baseline.
 
 Output:
-  <out>/results.json   per-file metrics, the decision below and `passed`
-  stdout               PASS or FAIL, then one line per decision metric
+  <out>/results.json   per-file metrics, the decision below, `passed`, and `perf` (see below)
+  stdout               PASS or FAIL, then one line per decision metric, then one PERF line per mode
+
+Performance (block_total_ms p99, read from <dir>/<name>/blocks.csv when present):
+  max-of-file   p99 per (file, run), maximum over them. The p99 of a 160-280 block file
+                is its 3rd-4th worst block: the maximum over 20 such estimates is noisy,
+                which is how stage A passed offline at 39.1 and failed live at 40.6.
+  pooled        p99 over all blocks of all runs: one estimate on the whole sample.
+  Both are printed with their n; neither changes `passed` (the p99 budget is applied by hand).
+  --apool/--bpool take comma-separated run dirs to pool more runs into the perf sample
+  (default: --adir/--bdir). Quality metrics always use --adir/--bdir only.
 
 Thresholds for regression checks are in docs/BENCHMARKS.md ("Пороги качества"). They use this script's
 per-file values. The rule below is the older mode comparison rule and is not those thresholds.
@@ -29,7 +38,7 @@ PRE-REGISTERED COMPARISON RULE (fixed before looking at results, applied uniform
   Verdict = PASS iff every decision metric passes. Mel pair distance has no direction: info only.
 Definitions are in the functions below and are printed by the report.
 """
-import argparse, json, os, sys, warnings, hashlib
+import argparse, csv, json, os, sys, warnings, hashlib
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np, soundfile as sf, librosa
 from scipy.signal import correlate, resample_poly
@@ -212,6 +221,20 @@ def one(arg):
     ea,eb=env(outs[a]),env(outs[b]); res['pair']['env_lag_a_vs_b_ms'],res['pair']['env_lag_conf']=best_lag(eb,ea,-100,100)
     return res
 
+def perf(dirs, names):
+    """block_total_ms p99 over every row with a finite value (the rows the stage gates used)."""
+    runs=[]; pool=[]
+    for d in dirs:
+        for name in names:
+            f=f'{d}/{name}/blocks.csv'
+            if not os.path.exists(f): continue
+            with open(f) as fh: x=[float(r['block_total_ms']) for r in csv.DictReader(fh) if r.get('block_total_ms') not in (None,'','nan')]
+            if not x: continue
+            runs.append(dict(name=name,dir=d,n=len(x),p99=float(np.percentile(x,99)))); pool+=x
+    if not pool: return None
+    return dict(max_file_p99=max(r['p99'] for r in runs),runs=len(runs),n_per_run_min=min(r['n'] for r in runs),
+                n_per_run_max=max(r['n'] for r in runs),pooled_p99=float(np.percentile(pool,99)),n_pooled=len(pool),per_run=runs)
+
 # metric: (key getter, floor, two_sided)
 DECISION=[('clicks',lambda m:m['clicks'],1.0,False),('bound_clicks',lambda m:m['bound_clicks'],1.0,False),('bound_jumps',lambda m:m['bound_jumps'],1.0,False),
  ('len_err_abs',lambda m:abs(m['len_err']),1.0,False),('gaps',lambda m:len(m['gaps']),1.0,False),('lag_span_ms',lambda m:m['lag_span_ms'] or 0.0,2.0,False),
@@ -229,14 +252,21 @@ def decide(results,a,b):
     return out,allpass
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--root',required=True); p.add_argument('--a',default='cpu'); p.add_argument('--b',default='ane-gpu'); p.add_argument('--out',required=True); p.add_argument('--jobs',type=int,default=4); p.add_argument('--adir',required=True); p.add_argument('--bdir',required=True); p.add_argument('--block-ms',type=int,default=100,help='block size of mode A outputs; sets its boundary grid and expected length (default 100)'); p.add_argument('--b-block-ms',type=int,default=None,help='block size of mode B outputs (default: same as --block-ms)'); o=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--root',required=True); p.add_argument('--a',default='cpu'); p.add_argument('--b',default='ane-gpu'); p.add_argument('--out',required=True); p.add_argument('--jobs',type=int,default=4); p.add_argument('--adir',required=True); p.add_argument('--bdir',required=True); p.add_argument('--block-ms',type=int,default=100,help='block size of mode A outputs; sets its boundary grid and expected length (default 100)'); p.add_argument('--b-block-ms',type=int,default=None,help='block size of mode B outputs (default: same as --block-ms)')
+    p.add_argument('--apool',default=None,help='comma-separated run dirs pooled for the p99 of mode A (default: --adir)')
+    p.add_argument('--bpool',default=None,help='comma-separated run dirs pooled for the p99 of mode B (default: --bdir)'); o=p.parse_args()
     bms=o.b_block_ms if o.b_block_ms is not None else o.block_ms
     os.makedirs(o.out,exist_ok=True); names=sorted(f[:-4] for f in os.listdir(f'{o.root}/TestAudio') if f.endswith('.wav'))
     with ProcessPoolExecutor(o.jobs) as ex: res=list(ex.map(one,[(o.root,o.a,o.b,n,o.out,o.adir,o.bdir,o.block_ms,bms) for n in names]))
     dec,ok=decide(res,o.a,o.b)
     cross=bms!=o.block_ms
-    json.dump(dict(results=res,decision=dec,passed=bool(ok),cross_config=cross),open(f'{o.out}/results.json','w'),indent=1)
+    pf={m:perf([x for x in d.split(',') if x],names) for m,d in ((o.a,o.apool or o.adir),(o.b,o.bpool or o.bdir))}
+    json.dump(dict(results=res,decision=dec,passed=bool(ok),cross_config=cross,perf=pf),open(f'{o.out}/results.json','w'),indent=1)
     print('PASS' if ok else 'FAIL')
     if cross: print('NOTE: cross-config comparison (different block sizes) — the difference verdict is NOT a gate; use absolute per-file thresholds')
     for d in dec: print({k:(round(v,3) if isinstance(v,float) else v) for k,v in d.items() if k!='per_file_d'})
+    for m,v in pf.items():
+        if v is None: print(f'PERF {m}: no blocks.csv under the run dirs'); continue
+        print(f"PERF {m}: max-of-file p99 {v['max_file_p99']:.3f} ms (n per run {v['n_per_run_min']}..{v['n_per_run_max']}, {v['runs']} runs), "
+              f"pooled p99 {v['pooled_p99']:.3f} ms (n = {v['n_pooled']})")
 if __name__=='__main__': main()
